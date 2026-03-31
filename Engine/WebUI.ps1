@@ -104,6 +104,13 @@ function Invoke-WebFix {
         [string] $BackupBaseDir,
         [bool]   $Confirmed
     )
+    if (-not $Script:IsAdmin) {
+        Send-JsonResponse $Response @{
+            success = $false
+            error   = 'Remediation requires administrator elevation. Restart as Administrator to apply fixes.'
+        } 403
+        return
+    }
     $f = $Findings | Where-Object { $_.Id -eq $FindingId } | Select-Object -First 1
     if (-not $f) {
         Send-JsonResponse $Response @{ success=$false; error="Finding '$FindingId' not found" } 404
@@ -598,6 +605,13 @@ function Invoke-WebBatchFix {
         [hashtable] $SafetyTiers,
         [string]    $BackupBaseDir
     )
+    if (-not $Script:IsAdmin) {
+        Send-JsonResponse $Response @{
+            success = $false
+            error   = 'Batch remediation requires administrator elevation. Restart as Administrator.'
+        } 403
+        return
+    }
     $applied = 0; $failed = 0; $skipped = 0
     $errors  = [System.Collections.Generic.List[string]]::new()
 

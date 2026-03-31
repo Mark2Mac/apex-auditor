@@ -169,6 +169,15 @@ function Invoke-RemediationLoop {
         [hashtable] $SafetyTiers
     )
 
+    if (-not $Script:IsAdmin) {
+        Write-TUI ''
+        Write-TUI '  [!] REMEDIATION REQUIRES ADMINISTRATOR ELEVATION' -Color Red
+        Write-TUI '      All fixes modify system-level settings (registry, services, audit policy).' -Color Yellow
+        Write-TUI '      Re-run the script as Administrator to apply fixes.' -Color Yellow
+        Write-TUI ''
+        return [PSCustomObject]@{ Applied=0; Skipped=0; Failed=0; BackupDir=$BackupDir }
+    }
+
     $applied  = 0
     $skipped  = 0
     $failed   = 0
