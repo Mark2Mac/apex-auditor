@@ -38,7 +38,7 @@
 
 .PARAMETER Suites
     Suites to run. Default: all.
-    Values: S1, S2, S3, S4, S5, S6, S7, S8, S9.
+    Values: S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11, S12.
 
 .PARAMETER TimeoutSec
     Max seconds to wait for each child run. Default: 300.
@@ -69,8 +69,8 @@ param(
 
     [string] $OutDir = "",
 
-    [ValidateSet("S1","S2","S3","S4","S5","S6","S7","S8","S9")]
-    [string[]] $Suites = @("S1","S2","S3","S4","S5","S6","S7","S8","S9"),
+    [ValidateSet("S1","S2","S3","S4","S5","S6","S7","S8","S9","S10","S11","S12")]
+    [string[]] $Suites = @("S1","S2","S3","S4","S5","S6","S7","S8","S9","S10","S11","S12"),
 
     [int]    $TimeoutSec  = 300,
     [switch] $SkipMatrix,
@@ -231,7 +231,7 @@ function Invoke-PreFlight {
         $params=$ast.FindAll({$args[0] -is [System.Management.Automation.Language.ParameterAst]},$true)
         $names=$params|ForEach-Object{$_.Name.VariablePath.UserPath}
         # v2.5 expected parameters (Sprint A-D)
-        $expected=@("Mode","Profile","ExportJSON","ExportHTML","CompareTo","Baseline","SkipHTML","NoTUI","ShowSignals","Version","Help")
+        $expected=@("Mode","Profile","ExportJSON","ExportHTML","CompareTo","Baseline","SkipHTML","NoTUI","ShowSignals","Remediate","Undo","Portable","CleanOnExit","Guided","WebUI","Version","Help")
         $missing=$expected|Where-Object{$_ -notin $names}
         if($missing -and -not $Quiet){Write-Host "  [!!] Missing expected params: $($missing -join ', ')" -ForegroundColor Yellow}
     } catch {}
@@ -261,7 +261,7 @@ function Get-BaseArgs {
 # ---------------------------------------------------------------------------
 #  BANNER
 # ---------------------------------------------------------------------------
-Write-Banner "APEX AUDIT SCIENTIFIC TEST LABORATORY v3.0"
+Write-Banner "APEX AUDIT SCIENTIFIC TEST LABORATORY v4.0"
 if(-not $Quiet){
     Write-Host "  Target  : $AuditScriptFull"
     Write-Host "  OutDir  : $OutDir"
@@ -357,7 +357,8 @@ if("S1" -in $Suites){
             "Invoke-CheckNetwork","Invoke-CheckIdentity","Invoke-CheckLocalAdmins",
             "Invoke-CheckDefenderExclusions","Invoke-CheckExploitProtection",
             "Invoke-CheckForensics","Invoke-CheckTelemetry","Invoke-CheckASR",
-            "Invoke-CheckAuditPol","Invoke-CheckWEF","Invoke-CheckServicePaths"
+            "Invoke-CheckAuditPol","Invoke-CheckWEF","Invoke-CheckServicePaths",
+            "Invoke-CheckPrintSpooler","Invoke-CheckPS2Engine","Invoke-CheckCertStore","Invoke-CheckScheduledTasks"
         )
         $missing=$expectedFns|Where-Object{$content -notmatch [regex]::Escape($_)}
         if(-not $missing){Emit -Status PASS -Suite S1 -Id S1.7 -Desc "All $($expectedFns.Count) expected check functions present in source"}
@@ -429,6 +430,30 @@ if("S2" -in $Suites){
                 Emit -Status $_emSt3 -Suite S2 -Id "S2.2.$($kv.Key)" -Desc "Context.$($kv.Key) = '$val'"
             }catch{Emit -Status FAIL -Suite S2 -Id "S2.2.$($kv.Key)" -Desc "Context.$($kv.Key) threw" -Detail $_.Exception.Message}
         }
+
+        # S2.2b v4.0 context fields (WARN: present in v4.0+ only)
+        $v4Fields=@{
+            "OSVersionName"   ={$args[0] -match 'Windows'}
+            "ChassisType"     ={$args[0] -match 'Laptop|Desktop|Tablet|VM|Unknown'}
+            "DetectedProfile" ={$args[0] -in @("PersonalLaptop","Enterprise","Lab","Paranoid")}
+        }
+        foreach($kv in $v4Fields.GetEnumerator()){
+            try{
+                $val=$j.Context.($kv.Key)
+                if($null -eq $val){Emit -Status WARN -Suite S2 -Id "S2.2.$($kv.Key)" -Desc "Context.$($kv.Key) absent (v4.0 field)"}
+                else{
+                    $valid=(& $kv.Value $val)
+                    $_emSt3b = if($valid){"PASS"}else{"WARN"}
+                    Emit -Status $_emSt3b -Suite S2 -Id "S2.2.$($kv.Key)" -Desc "Context.$($kv.Key) = '$val'"
+                }
+            }catch{Emit -Status WARN -Suite S2 -Id "S2.2.$($kv.Key)" -Desc "Context.$($kv.Key) check threw" -Detail $_.Exception.Message}
+        }
+        # IsAdmin is a bool field
+        try{
+            $iaVal=$j.Context.IsAdmin
+            if($null -eq $iaVal){Emit -Status WARN -Suite S2 -Id "S2.2.IsAdmin" -Desc "Context.IsAdmin absent (v4.0 field)"}
+            else{Emit -Status PASS -Suite S2 -Id "S2.2.IsAdmin" -Desc "Context.IsAdmin = '$iaVal'"}
+        }catch{Emit -Status WARN -Suite S2 -Id "S2.2.IsAdmin" -Desc "Context.IsAdmin check threw" -Detail $_.Exception.Message}
 
         # S2.3 Score ranges
         try{
@@ -935,6 +960,215 @@ if("S9" -in $Suites){
         }
     }
     $sw.Stop();$Script:SuiteTime["S9"]=$sw.ElapsedMilliseconds
+}
+
+# ===========================================================================
+#  SUITE S10 -- PORTABLE MODE
+# ===========================================================================
+if("S10" -in $Suites){
+    $sw=[System.Diagnostics.Stopwatch]::StartNew()
+    Write-SuiteHeader "S10" "Portable Mode (-Portable / -CleanOnExit)"
+
+    $s10Dir=Join-Path $LogsDir "S10_portable"
+    New-Item -ItemType Directory -Path $s10Dir -Force|Out-Null
+
+    # S10.1: -Portable <dir> — JSON written to that dir
+    try{
+        $p1Dir=Join-Path $s10Dir "port1"; New-Item -ItemType Directory -Path $p1Dir -Force|Out-Null
+        $r1=Invoke-AuditChild `
+            -ArgList @("-NoProfile","-ExecutionPolicy","Bypass","-File",$AuditScriptFull,
+                       "-Mode","Fast","-NoTUI","-SkipHTML","-Portable",$p1Dir) `
+            -StdOutFile (Join-Path $s10Dir "s10_1_stdout.txt") `
+            -StdErrFile (Join-Path $s10Dir "s10_1_stderr.txt") -Timeout 90
+        $jFiles=@(Get-ChildItem -Path $p1Dir -Filter "*.json" -EA SilentlyContinue)
+        $ok1=$jFiles.Count -gt 0 -and $r1.ExitCode -in @(0,1) -and -not $r1.TimedOut
+        $_s10st1=if($ok1){"PASS"}else{"FAIL"}
+        Emit -Status $_s10st1 -Suite S10 -Id S10.1 `
+            -Desc "-Portable <dir>: JSON written to specified dir (exit=$($r1.ExitCode))" `
+            -Detail "JSON files found: $($jFiles.Count)"
+    }catch{Emit -Status FAIL -Suite S10 -Id S10.1 -Desc "Portable dir test threw" -Detail $_.Exception.Message}
+
+    # S10.2: -Portable <dir> + -ExportJSON <other> — ExportJSON takes precedence
+    try{
+        $p2Dir=Join-Path $s10Dir "port2"; New-Item -ItemType Directory -Path $p2Dir -Force|Out-Null
+        $explicitJson=Join-Path $s10Dir "s10_explicit.json"
+        $r2=Invoke-AuditChild `
+            -ArgList @("-NoProfile","-ExecutionPolicy","Bypass","-File",$AuditScriptFull,
+                       "-Mode","Fast","-NoTUI","-SkipHTML",
+                       "-Portable",$p2Dir,"-ExportJSON",$explicitJson) `
+            -StdOutFile (Join-Path $s10Dir "s10_2_stdout.txt") `
+            -StdErrFile (Join-Path $s10Dir "s10_2_stderr.txt") -Timeout 90
+        $explicitExists=Test-Path $explicitJson
+        $_s10st2=if($explicitExists){"PASS"}else{"FAIL"}
+        Emit -Status $_s10st2 -Suite S10 -Id S10.2 `
+            -Desc "-Portable + -ExportJSON: explicit path wins (exit=$($r2.ExitCode))" `
+            -Detail "ExplicitJSON exists: $explicitExists"
+    }catch{Emit -Status WARN -Suite S10 -Id S10.2 -Desc "Portable+ExportJSON test threw" -Detail $_.Exception.Message}
+
+    # S10.3: -CleanOnExit removes JSON+HTML after exit
+    try{
+        $p3Dir=Join-Path $s10Dir "port3"; New-Item -ItemType Directory -Path $p3Dir -Force|Out-Null
+        $r3=Invoke-AuditChild `
+            -ArgList @("-NoProfile","-ExecutionPolicy","Bypass","-File",$AuditScriptFull,
+                       "-Mode","Fast","-NoTUI","-Portable",$p3Dir,"-CleanOnExit") `
+            -StdOutFile (Join-Path $s10Dir "s10_3_stdout.txt") `
+            -StdErrFile (Join-Path $s10Dir "s10_3_stderr.txt") -Timeout 90
+        $remaining=@(Get-ChildItem -Path $p3Dir -Recurse -File -EA SilentlyContinue|
+                     Where-Object{$_.Extension -in @(".json",".html")})
+        $ok3=$r3.ExitCode -in @(0,1) -and $remaining.Count -eq 0
+        $_s10st3=if($ok3){"PASS"}else{"FAIL"}
+        Emit -Status $_s10st3 -Suite S10 -Id S10.3 `
+            -Desc "-CleanOnExit: JSON+HTML deleted on exit (exit=$($r3.ExitCode))" `
+            -Detail "Remaining files: $($remaining.Count)"
+    }catch{Emit -Status FAIL -Suite S10 -Id S10.3 -Desc "CleanOnExit test threw" -Detail $_.Exception.Message}
+
+    # S10.4: -Portable <dir> — script exits cleanly (exit 0 or 1, not 2)
+    try{
+        $p4Dir=Join-Path $s10Dir "port4"; New-Item -ItemType Directory -Path $p4Dir -Force|Out-Null
+        $r4=Invoke-AuditChild `
+            -ArgList @("-NoProfile","-ExecutionPolicy","Bypass","-File",$AuditScriptFull,
+                       "-Mode","Fast","-NoTUI","-SkipHTML","-Portable",$p4Dir) `
+            -StdOutFile (Join-Path $s10Dir "s10_4_stdout.txt") `
+            -StdErrFile (Join-Path $s10Dir "s10_4_stderr.txt") -Timeout 90
+        $ok4=$r4.ExitCode -in @(0,1) -and -not $r4.TimedOut
+        $_s10st4=if($ok4){"PASS"}else{"FAIL"}
+        Emit -Status $_s10st4 -Suite S10 -Id S10.4 `
+            -Desc "-Portable exits 0/1 (not 2/fatal) (exit=$($r4.ExitCode))" `
+            -Detail "TimedOut: $($r4.TimedOut)"
+    }catch{Emit -Status WARN -Suite S10 -Id S10.4 -Desc "Portable exit-code test threw" -Detail $_.Exception.Message}
+
+    $sw.Stop();$Script:SuiteTime["S10"]=$sw.ElapsedMilliseconds
+}
+
+# ===========================================================================
+#  SUITE S11 -- WEB DASHBOARD SMOKE
+# ===========================================================================
+if("S11" -in $Suites){
+    $sw=[System.Diagnostics.Stopwatch]::StartNew()
+    Write-SuiteHeader "S11" "Web Dashboard Smoke Test (-WebUI)"
+
+    $s11Dir=Join-Path $LogsDir "S11_webui"
+    New-Item -ItemType Directory -Path $s11Dir -Force|Out-Null
+    $s11Json=Join-Path $s11Dir "s11_run.json"
+
+    $auditDir=Split-Path $AuditScriptFull -Parent
+    $safeScript=$AuditScriptFull -replace "'","''"
+    $safeJson=$s11Json -replace "'","''"
+    $cmdStr="& '$safeScript' -Mode Fast -NoTUI -SkipHTML -ExportJSON '$safeJson' -WebUI"
+
+    $psi11=New-Object System.Diagnostics.ProcessStartInfo
+    $psi11.FileName=$Script:PSExe
+    $psi11.Arguments="-NoProfile -ExecutionPolicy Bypass -Command `"$($cmdStr -replace '"','\"')`""
+    $psi11.UseShellExecute=$false; $psi11.CreateNoWindow=$true
+    $psi11.RedirectStandardOutput=$true; $psi11.RedirectStandardError=$true
+    $psi11.WorkingDirectory=$auditDir
+
+    $proc11=New-Object System.Diagnostics.Process; $proc11.StartInfo=$psi11
+
+    $s11Started=$false
+    try{
+        $proc11.Start()|Out-Null; $s11Started=$true
+
+        # Poll ports 8600-8699 until server responds (up to 90s)
+        $detectedPort=0; $maxWait=90; $s11Elapsed=0
+        while($s11Elapsed -lt $maxWait -and $detectedPort -eq 0){
+            Start-Sleep -Milliseconds 500; $s11Elapsed+=0.5
+            foreach($p in 8600..8699){
+                try{$t=New-Object System.Net.Sockets.TcpClient;$t.Connect('127.0.0.1',$p);$t.Close();$detectedPort=$p;break}catch{}
+            }
+        }
+
+        if($detectedPort -gt 0){
+            Emit -Status PASS -Suite S11 -Id S11.1 -Desc "WebUI bound to port in 8600-8699: port=$detectedPort"
+
+            # S11.2: GET /api/data returns JSON with required keys
+            $s11DataOk=$false; $s11Detail=""
+            try{
+                $wc=New-Object System.Net.WebClient
+                $raw=$wc.DownloadString("http://localhost:$detectedPort/api/data")
+                $data=$raw|ConvertFrom-Json
+                $hasCtx=$null -ne ($data|Select-Object -ExpandProperty context -EA SilentlyContinue)
+                $hasScores=$null -ne ($data|Select-Object -ExpandProperty scores -EA SilentlyContinue)
+                $hasFindings=$null -ne ($data|Select-Object -ExpandProperty findings -EA SilentlyContinue)
+                $s11DataOk=$hasCtx -and $hasScores -and $hasFindings
+                $s11Detail="context=$hasCtx scores=$hasScores findings=$hasFindings"
+            }catch{$s11Detail=$_.Exception.Message}
+            $_s11st2=if($s11DataOk){"PASS"}else{"FAIL"}
+            Emit -Status $_s11st2 -Suite S11 -Id S11.2 `
+                -Desc "GET /api/data returns JSON with context/scores/findings" -Detail $s11Detail
+
+            # S11.3: POST /api/shutdown stops server cleanly
+            try{
+                $wc2=New-Object System.Net.WebClient
+                $wc2.Headers.Add("Content-Type","application/json")
+                $wc2.UploadString("http://localhost:$detectedPort/api/shutdown","POST","{}") | Out-Null
+            }catch{} # connection close after shutdown is normal
+            $exitedClean=$proc11.WaitForExit(20000)
+            $exitDetail=if($exitedClean){"Exited within 20s (code=$($proc11.ExitCode))"}else{"Did not exit within 20s"}
+            $_s11st3=if($exitedClean){"PASS"}else{"WARN"}
+            Emit -Status $_s11st3 -Suite S11 -Id S11.3 `
+                -Desc "POST /api/shutdown stops server cleanly" -Detail $exitDetail
+        } else {
+            $s11NotFound="WebUI did not bind to 8600-8699 within ${maxWait}s (process running: $(-not $proc11.HasExited))"
+            Emit -Status FAIL -Suite S11 -Id S11.1 -Desc $s11NotFound
+            Emit -Status SKIP -Suite S11 -Id S11.2 -Desc "Skipped: server port not detected"
+            Emit -Status SKIP -Suite S11 -Id S11.3 -Desc "Skipped: server port not detected"
+        }
+    }catch{
+        Emit -Status FAIL -Suite S11 -Id S11.1 -Desc "WebUI child process failed" -Detail $_.Exception.Message
+    }finally{
+        if($s11Started -and -not $proc11.HasExited){
+            try{$proc11.Kill()}catch{}
+            $proc11.WaitForExit(5000)|Out-Null
+        }
+    }
+
+    $sw.Stop();$Script:SuiteTime["S11"]=$sw.ElapsedMilliseconds
+}
+
+# ===========================================================================
+#  SUITE S12 -- GUIDED MODE SANITY
+# ===========================================================================
+if("S12" -in $Suites){
+    $sw=[System.Diagnostics.Stopwatch]::StartNew()
+    Write-SuiteHeader "S12" "Guided Mode Sanity"
+
+    # S12.1: -Guided param exists in the AST
+    try{
+        $tokens=$null;$errors=$null
+        $ast=[System.Management.Automation.Language.Parser]::ParseFile($AuditScriptFull,[ref]$tokens,[ref]$errors)
+        $allParams=$ast.FindAll({$args[0] -is [System.Management.Automation.Language.ParameterAst]},$true)
+        $guidedParam=$allParams|Where-Object{$_.Name.VariablePath.UserPath -eq 'Guided'}
+        $_s12st1=if($guidedParam){"PASS"}else{"FAIL"}
+        Emit -Status $_s12st1 -Suite S12 -Id S12.1 `
+            -Desc "'-Guided' parameter declared in Windows_Audit.ps1"
+    }catch{Emit -Status WARN -Suite S12 -Id S12.1 -Desc "AST param check threw" -Detail $_.Exception.Message}
+
+    # S12.2: Wizard activation gated on bare launch + explicit flag (CI-safe)
+    try{
+        $content=Get-Content $AuditScriptFull -Raw -ErrorAction Stop
+        $hasBareLaunch=$content -match '\$isBareLaunch\s*=\s*\(\s*\$PSBoundParameters\.Count\s*-eq\s*0\s*\)'
+        $hasGated=$content -match 'if\s*\(\s*\$Guided\s*-or\s*\$isBareLaunch\s*\)'
+        $ok12_2=$hasBareLaunch -and $hasGated
+        $_s12st2=if($ok12_2){"PASS"}else{"WARN"}
+        Emit -Status $_s12st2 -Suite S12 -Id S12.2 `
+            -Desc "Wizard activation gated (CI-safe: bare-launch + explicit flag only)" `
+            -Detail "isBareLaunch pattern: $hasBareLaunch  gate check: $hasGated"
+    }catch{Emit -Status WARN -Suite S12 -Id S12.2 -Desc "Source pattern check threw" -Detail $_.Exception.Message}
+
+    # S12.3: Engine\WebUI.ps1 exists and is lazy-loaded under -WebUI gate
+    try{
+        $content=Get-Content $AuditScriptFull -Raw -ErrorAction Stop
+        $webUiLazy=$content -match 'if\s*\(\s*\$WebUI\s*\)\s*\{.*Engine\\WebUI\.ps1'
+        $webUiFile=Test-Path (Join-Path (Split-Path $AuditScriptFull -Parent) 'Engine\WebUI.ps1')
+        $ok12_3=$webUiLazy -and $webUiFile
+        $_s12st3=if($ok12_3){"PASS"}else{"FAIL"}
+        Emit -Status $_s12st3 -Suite S12 -Id S12.3 `
+            -Desc "Engine\WebUI.ps1 exists and is lazy-loaded under -WebUI gate" `
+            -Detail "File exists: $webUiFile  Lazy gate: $webUiLazy"
+    }catch{Emit -Status WARN -Suite S12 -Id S12.3 -Desc "WebUI.ps1 check threw" -Detail $_.Exception.Message}
+
+    $sw.Stop();$Script:SuiteTime["S12"]=$sw.ElapsedMilliseconds
 }
 
 # ===========================================================================

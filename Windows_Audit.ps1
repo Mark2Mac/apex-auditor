@@ -92,12 +92,22 @@ param(
     [switch] $ShowSignals,
     [switch] $Remediate,
     [string] $Undo       = '',
+    [string] $Portable   = '',   # All output to this dir; defaults to $PSScriptRoot if passed without value
+    [switch] $CleanOnExit,       # Delete JSON+HTML on exit (backups are always kept)
+    [switch] $Guided,            # Interactive wizard mode
+    [switch] $WebUI,             # Launch interactive localhost web dashboard
     [switch] $Version,
     [switch] $Help
 )
 
 Set-StrictMode -Off
 $ErrorActionPreference = 'Stop'
+
+# Portable flag without an explicit path → default to script's own directory
+if ($PSBoundParameters.ContainsKey('Portable') -and ($Portable -eq '')) {
+    $Portable = $PSScriptRoot
+}
+$Script:GeneratedFiles = [System.Collections.Generic.List[string]]::new()
 
 # ---------------------------------------------------------------------------
 #  DOT-SOURCE ENGINE AND CHECKS
@@ -107,6 +117,7 @@ $Script:RootDir = $PSScriptRoot
 . (Join-Path $Script:RootDir 'Engine\Core.ps1')
 . (Join-Path $Script:RootDir 'Engine\Report.ps1')
 . (Join-Path $Script:RootDir 'Engine\Remediate.ps1')
+if ($WebUI) { . (Join-Path $Script:RootDir 'Engine\WebUI.ps1') }
 
 $checkFiles = Get-ChildItem -Path (Join-Path $Script:RootDir 'Checks') -Filter 'Check-*.ps1' |
               Sort-Object Name
@@ -115,8 +126,8 @@ foreach ($f in $checkFiles) { . $f.FullName }
 # ---------------------------------------------------------------------------
 #  CONSTANTS
 # ---------------------------------------------------------------------------
-$Script:TOOL_VERSION  = '3.0.0'
-$Script:BUILD_DATE    = '2026-03-30'
+$Script:TOOL_VERSION  = '4.0.0'
+$Script:BUILD_DATE    = '2026-03-31'
 $Script:SCORE_WEIGHTS = @{ CRITICAL=15; HIGH=8; MEDIUM=5; LOW=2 }
 $Script:CimSession    = $null
 
@@ -148,14 +159,111 @@ $Script:CheckManifest = @(
 )
 
 # ---------------------------------------------------------------------------
+#  COLORED HELP
+# ---------------------------------------------------------------------------
+function Show-ColoredHelp {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost','')]
+    param()
+    $c  = 'Cyan'; $w = 'White'; $g = 'DarkGray'; $dc = 'DarkCyan'; $y = 'Yellow'
+    Write-Host ''
+    Write-Host "  APEX Zero-Trust Windows Auditor v$($Script:TOOL_VERSION)  ($($Script:BUILD_DATE))" -ForegroundColor $c
+    Write-Host ('  ' + '-' * 60) -ForegroundColor DarkCyan
+    Write-Host ''
+    Write-Host '  QUICK START' -ForegroundColor $c
+    Write-Host '    .\Windows_Audit.ps1                     ' -NoNewline -ForegroundColor $w
+    Write-Host '# Guided wizard (auto-detect everything)'    -ForegroundColor $g
+    Write-Host '    .\Windows_Audit.ps1 -Mode Deep           ' -NoNewline -ForegroundColor $w
+    Write-Host '# Full scan, default profile'                -ForegroundColor $g
+    Write-Host '    .\Windows_Audit.ps1 -Remediate           ' -NoNewline -ForegroundColor $w
+    Write-Host '# Scan + guided fix loop'                    -ForegroundColor $g
+    Write-Host '    .\Windows_Audit.ps1 -WebUI               ' -NoNewline -ForegroundColor $w
+    Write-Host '# Launch live web dashboard'                 -ForegroundColor $g
+    Write-Host ''
+    Write-Host '  SCAN OPTIONS' -ForegroundColor $c
+    Write-Host '    -Mode <Fast|Deep>          ' -NoNewline -ForegroundColor $w
+    Write-Host 'Scan depth. Fast=18 checks, Deep=21. Default: Deep'      -ForegroundColor $g
+    Write-Host '    -Profile <PersonalLaptop|Enterprise|Lab|Paranoid>'    -ForegroundColor $w
+    Write-Host '                               ' -NoNewline -ForegroundColor $w
+    Write-Host 'Risk profile label. Default: PersonalLaptop'              -ForegroundColor $g
+    Write-Host '    -Guided                    ' -NoNewline -ForegroundColor $w
+    Write-Host 'Step-by-step setup wizard (auto-activates on bare run)'   -ForegroundColor $g
+    Write-Host ''
+    Write-Host '  OUTPUT OPTIONS' -ForegroundColor $c
+    Write-Host '    -ExportJSON <path>         ' -NoNewline -ForegroundColor $w
+    Write-Host 'JSON report path (auto-generated if omitted)'             -ForegroundColor $g
+    Write-Host '    -ExportHTML <path>         ' -NoNewline -ForegroundColor $w
+    Write-Host 'HTML report path (derived from JSON path if omitted)'     -ForegroundColor $g
+    Write-Host '    -SkipHTML                  ' -NoNewline -ForegroundColor $w
+    Write-Host 'Suppress HTML generation (CI pipelines)'                  -ForegroundColor $g
+    Write-Host '    -NoTUI                     ' -NoNewline -ForegroundColor $w
+    Write-Host 'Suppress all console output'                              -ForegroundColor $g
+    Write-Host '    -ShowSignals               ' -NoNewline -ForegroundColor $w
+    Write-Host 'Append raw ASR GUIDs to JSON output'                      -ForegroundColor $g
+    Write-Host '    -Portable [path]           ' -NoNewline -ForegroundColor $w
+    Write-Host 'All output to specified dir (USB-safe). Omit path = script dir'  -ForegroundColor $g
+    Write-Host '    -CleanOnExit               ' -NoNewline -ForegroundColor $w
+    Write-Host 'Delete JSON+HTML on exit (backups are always kept)'       -ForegroundColor $g
+    Write-Host ''
+    Write-Host '  COMPARISON & BASELINE' -ForegroundColor $c
+    Write-Host '    -CompareTo <path>          ' -NoNewline -ForegroundColor $w
+    Write-Host 'Compare against a previous report (shows Δ Delta tab)'   -ForegroundColor $g
+    Write-Host '    -Baseline <path>           ' -NoNewline -ForegroundColor $w
+    Write-Host 'Save this report as baseline for future comparisons'      -ForegroundColor $g
+    Write-Host ''
+    Write-Host '  REMEDIATION' -ForegroundColor $c
+    Write-Host '    -Remediate                 ' -NoNewline -ForegroundColor $w
+    Write-Host 'Interactive fix loop after scan (SAFE/CAUTION/RISKY tiers)'      -ForegroundColor $g
+    Write-Host '    -Undo <backup-path>        ' -NoNewline -ForegroundColor $w
+    Write-Host 'Restore system state from a previous remediation backup'  -ForegroundColor $g
+    Write-Host ''
+    Write-Host '  WEB DASHBOARD' -ForegroundColor $c
+    Write-Host '    -WebUI                     ' -NoNewline -ForegroundColor $w
+    Write-Host 'Launch live dashboard at http://localhost:86xx/ in browser'      -ForegroundColor $g
+    Write-Host ''
+    Write-Host '  EXAMPLES' -ForegroundColor $c
+    Write-Host '    # Enterprise server, JSON only, no browser:'                  -ForegroundColor $dc
+    Write-Host '    .\Windows_Audit.ps1 -Mode Deep -Profile Enterprise -NoTUI -SkipHTML' -ForegroundColor $y
+    Write-Host ''
+    Write-Host '    # USB portable scan — all files on the stick, clean exit:'    -ForegroundColor $dc
+    Write-Host '    .\Windows_Audit.ps1 -Portable E:\AuditResults -CleanOnExit'   -ForegroundColor $y
+    Write-Host ''
+    Write-Host '    # Compare against last month''s baseline:'                     -ForegroundColor $dc
+    Write-Host '    .\Windows_Audit.ps1 -CompareTo .\jan_baseline.json'           -ForegroundColor $y
+    Write-Host ''
+    Write-Host '    # Full interactive session with web dashboard:'                -ForegroundColor $dc
+    Write-Host '    .\Windows_Audit.ps1 -WebUI'                                   -ForegroundColor $y
+    Write-Host ''
+    Write-Host '  Exit codes: 0 = clean  1 = vulnerabilities found  2 = fatal error' -ForegroundColor DarkGray
+    Write-Host ''
+}
+
+# ---------------------------------------------------------------------------
 #  EARLY EXITS
 # ---------------------------------------------------------------------------
-if ($Help)    { Get-Help $MyInvocation.MyCommand.Path -Full; exit 0 }
+if ($Help)    { Show-ColoredHelp; exit 0 }
 if ($Version) { Write-Output "APEX Zero-Trust Enterprise Audit v$($Script:TOOL_VERSION) ($($Script:BUILD_DATE))"; exit 0 }
 if ($Undo -ne '') {
     try   { Invoke-RemediationUndo -BackupPath $Undo }
     catch { Write-Warning "APEX Undo fatal error: $($_.Exception.Message)"; exit 2 }
     exit 0
+}
+
+# ---------------------------------------------------------------------------
+#  GUIDED MODE TRIGGER
+#  Activates on bare invocation (no params) or explicit -Guided.
+#  Never activates when any explicit scan param is given (CI-safe).
+# ---------------------------------------------------------------------------
+$Script:InGuidedMode = $false
+$isBareLaunch = ($PSBoundParameters.Count -eq 0)
+if ($Guided -or $isBareLaunch) {
+    . (Join-Path $Script:RootDir 'Engine\Wizard.ps1')
+    $wizResult = Invoke-GuidedMode
+    if ($wizResult) {
+        $Mode    = $wizResult.Mode
+        $Profile = $wizResult.Profile
+        if ($wizResult.CompareTo -ne '') { $CompareTo = $wizResult.CompareTo }
+        if ($wizResult.Baseline  -ne '') { $Baseline  = $wizResult.Baseline  }
+    }
 }
 
 # ===========================================================================
@@ -178,15 +286,19 @@ try {
     $encInfo = try { Get-Cim 'Win32_SystemEnclosure' } catch { $null }
 
     $context = [PSCustomObject]@{
-        Hostname     = $env:COMPUTERNAME
-        OSCaption    = if ($osInfo)  { $osInfo.Caption.Trim()  } else { 'Unknown' }
-        OSBuild      = if ($osInfo)  { $osInfo.BuildNumber     } else { 'Unknown' }
-        DomainJoined = if ($csInfo)  { [bool]$csInfo.PartOfDomain } else { $false }
-        IsPortable   = if ($encInfo) { [bool]($encInfo.ChassisTypes | Where-Object { $_ -in @(8,9,10,11,12,14,18,21) }) } else { $false }
-        TimestampUTC = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-        Mode         = $Mode
-        Profile      = $Profile
-        PSVersion    = $PSVersionTable.PSVersion.ToString()
+        Hostname        = $env:COMPUTERNAME
+        OSCaption       = if ($osInfo)  { $osInfo.Caption.Trim()  } else { 'Unknown' }
+        OSBuild         = if ($osInfo)  { $osInfo.BuildNumber     } else { 'Unknown' }
+        OSVersionName   = Get-OSVersionName
+        DomainJoined    = if ($csInfo)  { [bool]$csInfo.PartOfDomain } else { $false }
+        IsPortable      = if ($encInfo) { [bool]($encInfo.ChassisTypes | Where-Object { $_ -in @(8,9,10,11,12,14,18,21) }) } else { $false }
+        IsAdmin         = $Script:IsAdmin
+        ChassisType     = Get-ChassisTypeName -EnclosureInfo $encInfo -CSInfo $csInfo
+        DetectedProfile = Get-DetectedProfile -DomainJoined ([bool]($csInfo -and $csInfo.PartOfDomain)) -ChassisType (Get-ChassisTypeName -EnclosureInfo $encInfo -CSInfo $csInfo)
+        TimestampUTC    = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        Mode            = $Mode
+        Profile         = $Profile
+        PSVersion       = $PSVersionTable.PSVersion.ToString()
     }
 
     $jsonPath = Resolve-ExportPath
@@ -204,6 +316,7 @@ try {
 
     $mapFile = Join-Path $Script:RootDir 'compliance_map.json'
     Get-ComplianceRefs -MapPath $mapFile
+    Set-FindingRecommendations -Findings $Script:Findings -Profile $Profile
 
     Write-TUI '[*] Phase 3/4  Score    -- computing Severity + Hygiene + Delta'
     $scores    = Measure-AuditScore    -Findings $Script:Findings
@@ -246,6 +359,10 @@ try {
         $ok      = Export-HTMLReport -Path $htmlPath -Ctx $context -Scores $scores -Findings $Script:Findings -Delta $delta
         $htmlMsg = if ($ok) { "HTML : $htmlPath" } else { '[!] HTML export failed' }
         if (-not $NoTUI) { Write-TUI $htmlMsg }
+        # Auto-open report in default browser (skip in headless/CI and when WebUI replaces it)
+        if ($ok -and -not $NoTUI -and -not $WebUI) {
+            try { Start-Process $htmlPath } catch { }
+        }
     }
 
     if ($Baseline -ne '') {
@@ -260,10 +377,29 @@ try {
     }
 
     # ---------------------------------------------------------------------------
+    #  WEB DASHBOARD MODE: interactive localhost dashboard (supersedes remediation)
+    # ---------------------------------------------------------------------------
+    if ($WebUI) {
+        $backupBase = if ($Portable -and $Portable -ne '') { Join-Path $Portable 'Backups' } else { 'C:\ProgramData\ApexAudit\Backups' }
+        Start-AuditWebUI -Context $context -Scores $scores -Findings $Script:Findings `
+            -Delta $delta -SafetyTiers $Script:SafetyTiers -BackupBaseDir $backupBase
+    }
+
+    # ---------------------------------------------------------------------------
+    #  GUIDED POST-SCAN: offer remediation + baseline save
+    # ---------------------------------------------------------------------------
+    if ($Script:InGuidedMode -and -not $Remediate -and -not $WebUI) {
+        $postResult = Invoke-GuidedPostScan -VulnCount $vulnCount
+        if ($postResult.Remediate) { $Remediate = $true }
+        if ($postResult.Baseline -ne '') { $Baseline = $postResult.Baseline }
+    }
+
+    # ---------------------------------------------------------------------------
     #  REMEDIATION MODE: interactive fix loop after report
     # ---------------------------------------------------------------------------
-    if ($Remediate) {
-        $backupDir = New-RemediationBackup -FindingCount $vulnCount -ToolVersion $Script:TOOL_VERSION
+    if ($Remediate -and -not $WebUI) {
+        $backupBase = if ($Portable -and $Portable -ne '') { Join-Path $Portable 'Backups' } else { '' }
+        $backupDir  = New-RemediationBackup -FindingCount $vulnCount -ToolVersion $Script:TOOL_VERSION -BaseDir $backupBase
         if ($backupDir) {
             Invoke-RemediationLoop -Findings $Script:Findings -BackupDir $backupDir -SafetyTiers $Script:SafetyTiers
         } else {
@@ -278,6 +414,13 @@ try {
 } finally {
     if ($Script:CimSession) {
         try { Remove-CimSession $Script:CimSession -ErrorAction SilentlyContinue } catch { Write-Warning "Suppressed: $_" }
+    }
+    if ($CleanOnExit -and $Script:GeneratedFiles) {
+        foreach ($gf in $Script:GeneratedFiles) {
+            if ($gf -notlike '*Backups*' -and (Test-Path $gf -ErrorAction SilentlyContinue)) {
+                Remove-Item $gf -Force -ErrorAction SilentlyContinue
+            }
+        }
     }
 }
 

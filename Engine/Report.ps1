@@ -206,6 +206,10 @@ render();
     try {
         $enc = New-Object System.Text.UTF8Encoding($false)
         [System.IO.File]::WriteAllText($Path, $html, $enc)
+        if (-not $Script:GeneratedFiles) {
+            $Script:GeneratedFiles = [System.Collections.Generic.List[string]]::new()
+        }
+        $Script:GeneratedFiles.Add($Path)
         return $true
     } catch { return $false }
 }
@@ -214,7 +218,8 @@ render();
 #  EXPORT PATH RESOLUTION
 # ---------------------------------------------------------------------------
 function Resolve-ExportPath {
-    # $ExportJSON is visible via script scope (set in Windows_Audit.ps1 param block)
+    # $ExportJSON is visible via script scope (set in Windows_Audit.ps1 param block).
+    # $Portable, if set, overrides the base directory for auto-generated output.
     if ($ExportJSON -ne '') {
         $dir = Split-Path $ExportJSON -Parent
         if ($dir -and -not (Test-Path $dir)) {
@@ -226,8 +231,21 @@ function Resolve-ExportPath {
             [System.IO.File]::WriteAllText($tmp, 'x')
             Remove-Item $tmp -ErrorAction SilentlyContinue
         } catch { Write-Warning "Export path not writable: $ExportJSON"; exit 2 }
+        if (-not $Script:GeneratedFiles) {
+            $Script:GeneratedFiles = [System.Collections.Generic.List[string]]::new()
+        }
+        $Script:GeneratedFiles.Add($ExportJSON)
         return $ExportJSON
     }
-    $ts = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
-    return Join-Path (Get-Location).Path "audit_report_$ts.json"
+    $ts      = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
+    $baseDir = if ($Portable -and $Portable -ne '') { $Portable } else { (Get-Location).Path }
+    if (-not (Test-Path $baseDir)) {
+        try { New-Item -ItemType Directory -Path $baseDir -Force | Out-Null } catch { }
+    }
+    $path = Join-Path $baseDir "audit_report_$ts.json"
+    if (-not $Script:GeneratedFiles) {
+        $Script:GeneratedFiles = [System.Collections.Generic.List[string]]::new()
+    }
+    $Script:GeneratedFiles.Add($path)
+    return $path
 }

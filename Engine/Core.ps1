@@ -198,6 +198,83 @@ function Compare-AuditBaseline {
 }
 
 # ---------------------------------------------------------------------------
+#  SITUATION AWARENESS HELPERS
+# ---------------------------------------------------------------------------
+function Get-OSVersionName {
+    <#
+    .SYNOPSIS Returns a human-readable OS version name, e.g. "Windows 11 24H2". #>
+    try {
+        $regPath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+        $prod    = (Get-ItemProperty $regPath -Name ProductName    -EA SilentlyContinue).ProductName
+        $disp    = (Get-ItemProperty $regPath -Name DisplayVersion -EA SilentlyContinue).DisplayVersion
+        if ($prod -and $disp) { return "$prod $disp".Trim() }
+        if ($prod)             { return $prod.Trim() }
+    } catch { }
+    return 'Unknown'
+}
+
+function Get-ChassisTypeName {
+    <#
+    .SYNOPSIS Maps Win32_SystemEnclosure chassis types to Laptop/Desktop/Tablet/VM/Unknown. #>
+    param(
+        [object]$EnclosureInfo,
+        [object]$CSInfo
+    )
+    # VM detection: check computer model string before chassis type
+    try {
+        $model = if ($CSInfo) { [string]$CSInfo.Model } else { '' }
+        if ($model -match 'Virtual|VMware|VirtualBox|Hyper-V|KVM|QEMU|Xen') {
+            return 'VM'
+        }
+    } catch { }
+    if ($EnclosureInfo) {
+        try {
+            $types = @($EnclosureInfo.ChassisTypes)
+            if ($types | Where-Object { $_ -in @(8,9,10,11,12,14,18,21,30,31,32) }) {
+                if ($types | Where-Object { $_ -in @(30,31,32) }) { return 'Tablet' }
+                return 'Laptop'
+            }
+            if ($types | Where-Object { $_ -in @(3,4,5,6,7,15,16,24) }) { return 'Desktop' }
+        } catch { }
+    }
+    return 'Unknown'
+}
+
+function Get-DetectedProfile {
+    <#
+    .SYNOPSIS Auto-suggests an audit profile based on environment signals. #>
+    param(
+        [bool]   $DomainJoined,
+        [string] $ChassisType
+    )
+    if ($ChassisType -eq 'VM')    { return 'Lab' }
+    if ($DomainJoined)             { return 'Enterprise' }
+    return 'PersonalLaptop'
+}
+
+function Set-FindingRecommendations {
+    <#
+    .SYNOPSIS Adds a Recommendation NoteProperty to each finding based on profile and severity. #>
+    param(
+        [System.Collections.Generic.List[PSCustomObject]] $Findings,
+        [string] $Profile
+    )
+    foreach ($f in $Findings) {
+        $rec = switch ($f.Severity) {
+            'CRITICAL' { 'Recommended' }
+            'HIGH'     { 'Recommended' }
+            'MEDIUM'   {
+                $cisLv = try { $f.ComplianceRefs.CIS_Level } catch { 0 }
+                if ($cisLv -eq 1 -or $Profile -in @('Enterprise','Paranoid')) { 'Recommended' } else { 'Optional' }
+            }
+            'LOW'      { if ($Profile -eq 'Paranoid') { 'Recommended' } else { 'Optional' } }
+            default    { 'NotApplicable' }
+        }
+        $f | Add-Member -NotePropertyName 'Recommendation' -NotePropertyValue $rec -Force
+    }
+}
+
+# ---------------------------------------------------------------------------
 #  COMPLIANCE MAPPING
 # ---------------------------------------------------------------------------
 function Get-ComplianceRefs {

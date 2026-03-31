@@ -71,10 +71,12 @@ function New-RemediationBackup {
     #>
     param(
         [int]    $FindingCount = 0,
-        [string] $ToolVersion  = '3.0.0'
+        [string] $ToolVersion  = '3.0.0',
+        [string] $BaseDir      = ''   # If set, backups go here instead of C:\ProgramData\...
     )
     $ts      = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
-    $backDir = "C:\ProgramData\ApexAudit\Backups\$ts"
+    $root    = if ($BaseDir -and $BaseDir -ne '') { $BaseDir } else { 'C:\ProgramData\ApexAudit\Backups' }
+    $backDir = Join-Path $root $ts
     try {
         New-Item -ItemType Directory -Path $backDir -Force | Out-Null
     } catch {
