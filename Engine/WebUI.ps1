@@ -60,8 +60,14 @@ function Get-AuditApiData {
         [PSCustomObject] $Scores,
         [System.Collections.Generic.List[PSCustomObject]] $Findings,
         [PSCustomObject] $Delta,
-        [string]         $BackupBaseDir
+        [string]         $BackupBaseDir,
+        [hashtable]      $SafetyTiers = @{}
     )
+    # Annotate each finding with its safety tier (eliminates client-side hardcoded tierOf())
+    foreach ($f in $Findings) {
+        $t = if ($SafetyTiers.ContainsKey($f.Id)) { $SafetyTiers[$f.Id] } else { 'CAUTION' }
+        $f | Add-Member -NotePropertyName '_Tier' -NotePropertyValue $t -Force
+    }
     # Refresh scores from current findings state
     $live = Measure-AuditScore -Findings $Findings
     $backups = @()
@@ -130,6 +136,7 @@ function Invoke-WebFix {
     try {
         Invoke-Expression $f.Fix | Out-Null
         $f.Vulnerable = $false
+        $f | Add-Member -NotePropertyName '_OrigSeverity' -NotePropertyValue $f.Severity -Force
         $f.Severity   = 'PASS'
         $f | Add-Member -NotePropertyName '_FixedAt' -NotePropertyValue `
             (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') -Force
@@ -205,7 +212,8 @@ function Invoke-WebRescan {
         [System.Net.HttpListenerResponse] $Response,
         [System.Collections.Generic.List[PSCustomObject]] $Findings,
         [string] $MapPath,
-        [string] $Profile
+        [string] $Profile,
+        [string] $Mode = 'Deep'
     )
     try {
         $Findings.Clear()
@@ -298,6 +306,13 @@ body{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSyst
 .summary-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:12px}
 .scard{background:var(--bg2);border:1px solid var(--bd);border-radius:6px;padding:10px;text-align:center}
 .scard .n{font-size:24px;font-weight:700}.scard .l{font-size:11px;color:var(--tx2);margin-top:2px}
+.search-wrap{padding:6px 20px 2px;background:var(--bg2);border-bottom:1px solid var(--bd)}
+.search-wrap input{width:100%;max-width:480px;background:var(--bg3);border:1px solid var(--bd);color:var(--tx);padding:6px 12px;border-radius:6px;font-size:13px;outline:none}
+.search-wrap input:focus{border-color:var(--cya)}
+.quick-actions{display:flex;gap:8px;padding:8px 0 4px;flex-wrap:wrap}
+.qa-btn{padding:5px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600}
+.qa-safe{background:#0d3320;color:var(--grn);border:1px solid #1a6640}.qa-safe:hover{background:#1a4d30}
+.qa-caut{background:#3d2200;color:var(--ora);border:1px solid #7a4400}.qa-caut:hover{background:#4d2d00}
 </style>
 </head>
 <body>
@@ -311,12 +326,16 @@ body{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSyst
 </div>
 <div class="toast-ctr" id="toasts"></div>
 <div id="modal-bg" style="display:none" class="modal-bg"></div>
+<div class="search-wrap">
+  <input type="text" id="search" placeholder="Search findings (ID, name, category, note)..." oninput="render()">
+</div>
 <div class="wrap">
   <div id="summary" class="summary-grid"></div>
   <div class="tabs">
     <div class="tab active" id="tab-vuln" onclick="setTab('vuln')">Vulnerabilities</div>
     <div class="tab" id="tab-all"  onclick="setTab('all')">All Findings</div>
   </div>
+  <div id="quick-actions" class="quick-actions"></div>
   <div id="app"></div>
 </div>
 <script>
@@ -360,16 +379,6 @@ function renderSummary(findings){
     ).join('');
 }
 
-function tierOf(id,safeIds){
-  const safe=['WDIG','PSLOG','CMDLINE','SMBSIGS','SMBSIGC','UAC-SD','PS2ENGINE','SPOOLER-PNP','FW-LOG',
-              'SID500','AUDITPOL_PROCESS_CREATION','AUDITPOL_CREDENTIAL_VALID','AUDITPOL_LOGON',
-              'AUDITPOL_LOCKOUT','AUDITPOL_SPECIAL_LOGON','AUDITPOL_GROUP_MGMT','SECLOG','ASR','PUA','CFA'];
-  const risky=['PPL','BLENC','BLPBA','UAC','SMB1','RDP','RDP-NLA','VBS','HVCI','CG'];
-  if(risky.includes(id)) return 'RISKY';
-  if(safe.includes(id)) return 'SAFE';
-  return 'CAUTION';
-}
-
 function compBadges(f){
   if(!f.ComplianceRefs) return '';
   let b='<div class="comp">';
@@ -381,7 +390,7 @@ function compBadges(f){
 }
 
 function findingCard(f){
-  const tier=tierOf(f.Id,[]);
+  const tier=f._Tier||'CAUTION';
   const fixed=!f.Vulnerable;
   const btnClass={'SAFE':'btn-safe','CAUTION':'btn-caut','RISKY':'btn-risk'}[tier]||'btn-caut';
   const recTag=f.Recommendation?'<span class="rec-tag '+h(f.Recommendation)+'">'+h(f.Recommendation)+'</span>':'';
@@ -406,24 +415,40 @@ function findingCard(f){
   '</div>';
 }
 
+const sevOrd={CRITICAL:0,HIGH:1,MEDIUM:2,LOW:3,PASS:4};
+function worstSev(fs){return Math.min.apply(null,fs.map(f=>sevOrd[f.Severity]!=null?sevOrd[f.Severity]:4));}
+function catSummary(fs){
+  const vulns=fs.filter(f=>f.Vulnerable);
+  if(!vulns.length) return '';
+  const cnt={};
+  vulns.forEach(f=>{cnt[f.Severity]=(cnt[f.Severity]||0)+1;});
+  return ['CRITICAL','HIGH','MEDIUM','LOW'].filter(s=>cnt[s]).map(s=>' <span class="badge '+s+'">'+cnt[s]+' '+s+'</span>').join('');
+}
+
 function render(){
   if(!D){document.getElementById('app').innerHTML='<div class="empty">Connecting to APEX server...</div>';return;}
   const findings=D.findings||[];
-  const show=tab==='vuln'?findings.filter(f=>f.Vulnerable||f._FixedAt):findings;
+  const q=((document.getElementById('search')||{}).value||'').toLowerCase().trim();
+  const pool=tab==='vuln'?findings.filter(f=>f.Vulnerable||f._FixedAt):findings;
+  const show=q?pool.filter(f=>[f.Id,f.CheckName,f.Category,f.Note].some(v=>v&&String(v).toLowerCase().includes(q))):pool;
   if(!show.length){
-    document.getElementById('app').innerHTML='<div class="empty">'+(tab==='vuln'?'No vulnerabilities found.':'No findings.')+'</div>';
+    document.getElementById('app').innerHTML='<div class="empty">'+(tab==='vuln'?'No vulnerabilities found'+(q?' matching search.':'.') :'No findings.')+'</div>';
     return;
   }
-  // Group by category
+  // Group by category, sort findings within each group by severity
   const groups={};
   show.forEach(f=>{const c=f.Category||'Other';(groups[c]=groups[c]||[]).push(f);});
+  for(const cat in groups) groups[cat].sort((a,b)=>(sevOrd[a.Severity]??4)-(sevOrd[b.Severity]??4));
+  // Sort categories by worst severity among their findings
+  const sortedCats=Object.keys(groups).sort((a,b)=>worstSev(groups[a])-worstSev(groups[b]));
   let html='';
-  for(const [cat,fs] of Object.entries(groups)){
+  for(const cat of sortedCats){
+    const fs=groups[cat];
     const hasVuln=fs.some(f=>f.Vulnerable);
     html+='<div class="card sec'+(hasVuln?' open':'')+'">'+
       '<div class="sec-hdr" onclick="this.closest(\'.sec\').classList.toggle(\'open\')">'+
       '<span class="chev">&#9654;</span>'+
-      '<strong>'+h(cat)+'</strong>'+
+      '<strong>'+h(cat)+'</strong>'+catSummary(fs)+
       '<span style="margin-left:auto;font-size:12px;color:var(--tx2)">'+fs.length+' finding'+(fs.length===1?'':'s')+'</span>'+
       '</div>'+
       '<div class="sec-body">'+fs.map(findingCard).join('')+'</div>'+
@@ -443,6 +468,7 @@ async function poll(){
     document.getElementById('scantime').textContent='Last scan: '+(D.context&&D.context.TimestampUTC||'');
     renderScores(D.scores||{SeverityScore:0,HygieneScore:0});
     renderSummary(D.findings||[]);
+    renderQuickActions();
     if(changed) render();
   }catch(e){
     document.getElementById('dot').className='dot err';
@@ -451,14 +477,14 @@ async function poll(){
 
 async function doRescan(){
   const btn=document.getElementById('btn-rescan');
-  btn.disabled=true; btn.textContent='Scanning...';
+  btn.disabled=true; btn.innerHTML='Scanning...';
   try{
     const r=await fetch(BASE+'/api/rescan',{method:'POST'});
     const d=await r.json();
     if(d.success) toast('Rescan complete: '+d.vulnCount+' vulnerabilities');
     else toast('Rescan failed: '+d.error,false);
   }catch(e){toast('Rescan error: '+e.message,false);}
-  btn.disabled=false; btn.textContent='⟳ Rescan';
+  btn.disabled=false; btn.innerHTML='&#8635; Rescan';
   await poll();
 }
 
@@ -491,10 +517,10 @@ async function doFix(id, tier, btn){
     showModal(
       '<h3 style="color:var(--red)">&#9888; RISKY Fix</h3>'+
       '<p>This fix may require a reboot or make irreversible system changes. Type the finding ID to confirm:</p>'+
-      '<input id="risky-confirm" placeholder="'+id+'" autocomplete="off">'+
+      '<input id="risky-confirm" placeholder="'+id+'" autocomplete="off" spellcheck="false" style="text-transform:uppercase">'+
       '<div class="modal-btns"><button class="btn btn-undo" onclick="document.getElementById(\'modal-bg\').style.display=\'none\'">Cancel</button>'+
       '<button class="btn btn-risk" onclick="_modalConfirm(document.getElementById(\'risky-confirm\').value)">Apply</button></div>',
-      async(val)=>{ if(val===id) await applyFix(id,true,btn); else toast('ID mismatch — fix not applied.',false); }
+      async(val)=>{ if(val.toUpperCase()===id.toUpperCase()) await applyFix(id,true,btn); else toast('ID mismatch — fix not applied.',false); }
     );
   }
 }
@@ -522,11 +548,112 @@ async function doUndo(id, btn){
   }catch(e){ toast('Error: '+e.message,false); if(btn) btn.disabled=false; }
 }
 
+function renderQuickActions(){
+  const qa=document.getElementById('quick-actions');
+  if(!qa||!D) return;
+  const findings=D.findings||[];
+  const safeFixes=findings.filter(f=>f.Vulnerable&&f.Fix&&f.Fix!=='N/A'&&(f._Tier||'CAUTION')==='SAFE');
+  const recFixes=findings.filter(f=>f.Vulnerable&&f.Fix&&f.Fix!=='N/A'&&f.Recommendation==='Recommended'&&(f._Tier==='SAFE'||f._Tier==='CAUTION'));
+  qa.innerHTML=
+    (safeFixes.length?'<button class="qa-btn qa-safe" onclick="doBatchFix(\'safe\')">&#9654; Apply All Safe ('+safeFixes.length+')</button>':'')+
+    (recFixes.length?'<button class="qa-btn qa-caut" onclick="doBatchFix(\'recommended\')">&#9654; Apply Recommended ('+recFixes.length+')</button>':'');
+}
+
+async function doBatchFix(mode){
+  const findings=D?D.findings||[]:[];
+  const n=mode==='safe'
+    ?findings.filter(f=>f.Vulnerable&&(f._Tier||'CAUTION')==='SAFE').length
+    :findings.filter(f=>f.Vulnerable&&f.Recommendation==='Recommended'&&(f._Tier==='SAFE'||f._Tier==='CAUTION')).length;
+  if(!n){toast('No applicable findings.',false);return;}
+  if(mode==='recommended'){
+    if(!confirm('Apply '+n+' Recommended fix'+(n===1?'':'es')+' (SAFE + CAUTION tier)?\nA backup will be created first.')) return;
+  }
+  toast('Applying '+n+' fix'+(n===1?'':'es')+'...',true);
+  try{
+    const r=await fetch(BASE+'/api/batch-fix',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode})});
+    const d=await r.json();
+    if(d.success) toast('Batch done: '+d.applied+' applied'+(d.failed?' — '+d.failed+' failed':''),d.failed===0);
+    else toast('Batch failed: '+(d.error||'unknown'),false);
+    await poll();
+  }catch(e){toast('Error: '+e.message,false);}
+}
+
 poll();
 pollTimer=setInterval(poll,2000);
 </script>
 </body></html>
 "@
+}
+
+function Invoke-WebBatchFix {
+    <#
+    .SYNOPSIS
+        Batch-applies multiple fixes in one call.  Mode 'safe' = SAFE tier only.
+        Mode 'recommended' = SAFE+CAUTION tier where Recommendation='Recommended'.
+    #>
+    param(
+        [System.Net.HttpListenerResponse] $Response,
+        [string]   $Mode,
+        [System.Collections.Generic.List[PSCustomObject]] $Findings,
+        [hashtable] $SafetyTiers,
+        [string]    $BackupBaseDir
+    )
+    $applied = 0; $failed = 0; $skipped = 0
+    $errors  = [System.Collections.Generic.List[string]]::new()
+
+    $vulns = @($Findings | Where-Object { $_.Vulnerable -and $_.Fix -and $_.Fix -ne 'N/A' })
+    $targets = switch ($Mode) {
+        'safe' {
+            @($vulns | Where-Object {
+                $t = if ($SafetyTiers.ContainsKey($_.Id)) { $SafetyTiers[$_.Id] } else { 'CAUTION' }
+                $t -eq 'SAFE'
+            })
+        }
+        'recommended' {
+            @($vulns | Where-Object {
+                $t = if ($SafetyTiers.ContainsKey($_.Id)) { $SafetyTiers[$_.Id] } else { 'CAUTION' }
+                ($t -eq 'SAFE' -or $t -eq 'CAUTION') -and $_.Recommendation -eq 'Recommended'
+            })
+        }
+        default { @() }
+    }
+
+    if (-not $targets -or $targets.Count -eq 0) {
+        Send-JsonResponse $Response @{ success=$true; applied=0; failed=0; skipped=0; errors=@() }
+        return
+    }
+
+    # Single backup dir for the entire batch
+    $backDir = $null
+    if ($BackupBaseDir) {
+        $ts = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
+        $backDir = Join-Path $BackupBaseDir "batch_$ts"
+        try { New-Item -ItemType Directory -Path $backDir -Force | Out-Null } catch { $backDir = $null }
+    }
+
+    foreach ($f in $targets) {
+        try {
+            if ($backDir) { Backup-FindingState -Finding $f -BackupDir $backDir | Out-Null }
+            Invoke-Expression $f.Fix | Out-Null
+            $f | Add-Member -NotePropertyName '_OrigSeverity' -NotePropertyValue $f.Severity -Force
+            $f.Vulnerable = $false
+            $f.Severity   = 'PASS'
+            $f | Add-Member -NotePropertyName '_FixedAt' -NotePropertyValue `
+                (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') -Force
+            $applied++
+        } catch {
+            $errors.Add("$($f.Id): $($_.Exception.Message)")
+            $failed++
+        }
+    }
+
+    Send-JsonResponse $Response @{
+        success = $true
+        applied = $applied
+        failed  = $failed
+        skipped = $skipped
+        errors  = @($errors)
+    }
 }
 
 function Start-AuditWebUI {
@@ -594,7 +721,8 @@ function Start-AuditWebUI {
                 }
                 '^/api/data$' {
                     $data = Get-AuditApiData -Context $Context -Scores $Scores `
-                                -Findings $Findings -Delta $Delta -BackupBaseDir $BackupBaseDir
+                                -Findings $Findings -Delta $Delta -BackupBaseDir $BackupBaseDir `
+                                -SafetyTiers $SafetyTiers
                     Send-JsonResponse $resp $data
                 }
                 '^/api/fix/(.+)$' {
@@ -610,12 +738,18 @@ function Start-AuditWebUI {
                 }
                 '^/api/rescan$' {
                     Invoke-WebRescan -Response $resp -Findings $Findings `
-                        -MapPath $mapFile -Profile $Profile
+                        -MapPath $mapFile -Profile $Context.Profile -Mode $Context.Mode
                 }
                 '^/api/backups$' {
                     $data = Get-AuditApiData -Context $Context -Scores $Scores `
-                                -Findings $Findings -Delta $Delta -BackupBaseDir $BackupBaseDir
+                                -Findings $Findings -Delta $Delta -BackupBaseDir $BackupBaseDir `
+                                -SafetyTiers $SafetyTiers
                     Send-JsonResponse $resp @{ backups = $data.backups }
+                }
+                '^/api/batch-fix$' {
+                    $bMode = if ($body -and $body.mode) { $body.mode } else { 'safe' }
+                    Invoke-WebBatchFix -Response $resp -Mode $bMode -Findings $Findings `
+                        -SafetyTiers $SafetyTiers -BackupBaseDir $BackupBaseDir
                 }
                 '^/api/shutdown$' {
                     Send-JsonResponse $resp @{ success=$true; message='Server stopping' }
