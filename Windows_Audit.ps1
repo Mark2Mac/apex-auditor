@@ -280,6 +280,16 @@ try {
         $baseline = Read-BaselineJSON -Path $CompareTo
     }
 
+    if (-not $Script:IsAdmin -and -not $Script:InGuidedMode) {
+        Write-TUI ''
+        Write-TUI '  [!] Running without administrator elevation.' -Color Yellow
+        Write-TUI '      Limited checks: AuditPol, SMB Config, Firewall Policy,' -Color DarkYellow
+        Write-TUI '      Firewall Logging, Security Log Size, Exploit Protection, WEF' -Color DarkYellow
+        Write-TUI '      All remediation fixes require elevation.' -Color Yellow
+        Write-TUI '      Re-run as Administrator for a complete assessment.' -Color Yellow
+        Write-TUI ''
+    }
+
     Write-TUI '[*] Phase 1/4  Context  -- collecting system metadata'
     $osInfo  = try { Get-Cim 'Win32_OperatingSystem' } catch { $null }
     $csInfo  = try { Get-Cim 'Win32_ComputerSystem'  } catch { $null }

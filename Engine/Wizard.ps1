@@ -47,12 +47,35 @@ function Invoke-GuidedMode {
     Write-Host ''
     Write-Host '  Environment detected:' -ForegroundColor White
     Write-Host "    OS         : $osName (Build $build)" -ForegroundColor DarkGray
-    Write-Host "    Admin      : $(if ($isAdmin) { 'Yes (elevated)' } else { 'No — some checks will be limited' })" `
+    Write-Host "    Admin      : $(if ($isAdmin) { 'Yes (elevated)' } else { 'No — limited mode (see below)' })" `
                -ForegroundColor (if ($isAdmin) { 'Green' } else { 'Yellow' })
     Write-Host "    Domain     : $(if ($domain) { 'Joined' } else { 'Not joined' })" -ForegroundColor DarkGray
     Write-Host "    Chassis    : $chassis" -ForegroundColor DarkGray
     Write-Host "    Suggested  : $sugProf profile, Deep scan" -ForegroundColor Cyan
     Write-Host ''
+
+    # --- Self-elevation offer (non-admin only) ---
+    if (-not $isAdmin) {
+        Write-Host '  [!] Limited without elevation:' -ForegroundColor Yellow
+        Write-Host '        AuditPol, SMB Config, Firewall Policy, Firewall Logging,' -ForegroundColor DarkYellow
+        Write-Host '        Security Log Size, Exploit Protection, Event Forwarding' -ForegroundColor DarkYellow
+        Write-Host '      All remediation fixes also require elevation.' -ForegroundColor Yellow
+        Write-Host ''
+        Write-Host '  [?] Restart as Administrator?  [Y / n]  ' -NoNewline -ForegroundColor White
+        $elevAns = (Read-Host).Trim().ToUpper()
+        if ($elevAns -ne 'N') {
+            try {
+                $scriptPath = Join-Path $Script:RootDir 'Windows_Audit.ps1'
+                Start-Process powershell -Verb RunAs `
+                    -ArgumentList "-ExecutionPolicy Bypass -File `"$scriptPath`" -Guided"
+                Write-Host '  Elevated session launched. This window will close.' -ForegroundColor DarkCyan
+                exit 0
+            } catch {
+                Write-Host '  [!] Elevation cancelled. Continuing without elevation.' -ForegroundColor Yellow
+            }
+        }
+        Write-Host ''
+    }
 
     # --- Profile selection ---
     Write-Host "  [?] Use suggested profile `"$sugProf`"?  [Y / n / change]  " -NoNewline -ForegroundColor White
