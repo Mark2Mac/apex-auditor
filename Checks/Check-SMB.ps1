@@ -4,6 +4,20 @@
 #  SMBv1, signing (server + client), encryption.
 # =============================================================================
 function Invoke-CheckSMB {
+    if (-not $Script:IsAdmin) {
+        foreach ($chk in @(
+            @{Id='SMB1';   Name='SMBv1 Protocol';               Sev='CRITICAL';Src='Get-SmbServerConfiguration'}
+            @{Id='SMBSIGS';Name='SMB Signing (Server Required)'; Sev='MEDIUM'; Src='Get-SmbServerConfiguration'}
+            @{Id='SMBSIGC';Name='SMB Signing (Client Required)'; Sev='MEDIUM'; Src='Get-SmbClientConfiguration'}
+            @{Id='SMBENC'; Name='SMB Encryption (Server)';       Sev='LOW';    Src='Get-SmbServerConfiguration'}
+        )) {
+            Add-Finding -Id $chk.Id -Category 'SMB' -CheckName $chk.Name `
+                -Severity $chk.Sev -Vulnerable $false -Confidence 'NoAccess' `
+                -Observed 'RequiresElevation' -Expected 'Configured' -Source $chk.Src `
+                -Note 'SMB configuration query requires administrator elevation.'
+        }
+        return
+    }
     # SMBv1
     try {
         $srv  = Get-SmbServerConfiguration -ErrorAction Stop

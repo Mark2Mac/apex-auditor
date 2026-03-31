@@ -5,6 +5,14 @@
 # =============================================================================
 function Invoke-CheckWEF {
     $wecStat = Get-SvcStatus 'Wecsvc'
+    if (-not $Script:IsAdmin) {
+        Add-Finding -Id 'WEF' -Category 'EventFwd' -CheckName 'Windows Event Collector / WEF' `
+            -Severity 'LOW' -Vulnerable $false -Confidence 'NoAccess' `
+            -Observed "Wecsvc=$wecStat Subscriptions=RequiresElevation" `
+            -Expected 'Subscriptions configured (enterprise/SOC)' -Source 'Service + wecutil' `
+            -Note 'WEF subscription enumeration (wecutil) requires administrator elevation.'
+        return
+    }
     $subOut  = Invoke-Exe 'wecutil.exe' @('es')
     $subCnt  = @(($subOut.Trim() -split "`n") | Where-Object { $_ -ne '' }).Count
     $wefV    = $subCnt -eq 0

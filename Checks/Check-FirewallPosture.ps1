@@ -19,21 +19,28 @@ function Invoke-CheckFirewallPosture {
         -Note 'A stopped/disabled Windows Firewall service disables all host-based packet filtering.'
 
     # FW-LOG: Dropped-packet logging on Public profile
-    try {
-        $logOut     = Invoke-Exe 'netsh.exe' @('advfirewall', 'show', 'publicprofile')
-        $logDropped = $logOut -match '(?im)LogDroppedPackets\s+Yes'
-        $logFilePath = ''
-        if ($logOut -match '(?im)FileName\s+(.+)') { $logFilePath = $Matches[1].Trim() }
-        $logVuln = -not $logDropped
-        $logObs  = if ($logDropped) { "Enabled LogFile=$logFilePath" } else { 'Disabled' }
+    if (-not $Script:IsAdmin) {
         Add-Finding -Id 'FW-LOG' -Category 'Firewall' -CheckName 'Firewall Drop Logging (Public Profile)' `
-            -Severity 'LOW' -Vulnerable $logVuln -Confidence 'High' `
-            -Observed $logObs -Expected 'LogDroppedPackets=Yes' -Source 'netsh advfirewall' `
-            -Fix 'netsh advfirewall set publicprofile logging droppedpackets enable' `
-            -Note 'Logging dropped packets on the Public profile exposes port scans and inbound connection attempts for forensic review.'
-    } catch {
-        Add-Finding -Id 'FW-LOG' -Category 'Firewall' -CheckName 'Firewall Drop Logging (Public Profile)' `
-            -Severity 'LOW' -Vulnerable $false -Confidence 'QueryFailed' `
-            -Observed 'QueryFailed' -Expected 'LogDroppedPackets=Yes' -Source 'netsh advfirewall'
+            -Severity 'LOW' -Vulnerable $false -Confidence 'NoAccess' `
+            -Observed 'RequiresElevation' -Expected 'LogDroppedPackets=Yes' -Source 'netsh advfirewall' `
+            -Note 'Firewall logging query via netsh requires administrator elevation.'
+    } else {
+        try {
+            $logOut     = Invoke-Exe 'netsh.exe' @('advfirewall', 'show', 'publicprofile')
+            $logDropped = $logOut -match '(?im)LogDroppedPackets\s+Yes'
+            $logFilePath = ''
+            if ($logOut -match '(?im)FileName\s+(.+)') { $logFilePath = $Matches[1].Trim() }
+            $logVuln = -not $logDropped
+            $logObs  = if ($logDropped) { "Enabled LogFile=$logFilePath" } else { 'Disabled' }
+            Add-Finding -Id 'FW-LOG' -Category 'Firewall' -CheckName 'Firewall Drop Logging (Public Profile)' `
+                -Severity 'LOW' -Vulnerable $logVuln -Confidence 'High' `
+                -Observed $logObs -Expected 'LogDroppedPackets=Yes' -Source 'netsh advfirewall' `
+                -Fix 'netsh advfirewall set publicprofile logging droppedpackets enable' `
+                -Note 'Logging dropped packets on the Public profile exposes port scans and inbound connection attempts for forensic review.'
+        } catch {
+            Add-Finding -Id 'FW-LOG' -Category 'Firewall' -CheckName 'Firewall Drop Logging (Public Profile)' `
+                -Severity 'LOW' -Vulnerable $false -Confidence 'QueryFailed' `
+                -Observed 'QueryFailed' -Expected 'LogDroppedPackets=Yes' -Source 'netsh advfirewall'
+        }
     }
 }

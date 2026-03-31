@@ -6,25 +6,35 @@
 #  Severity=PASS with Vulnerable=true).
 # =============================================================================
 function Invoke-CheckFirewall {
-    foreach ($prof in @('Domain','Private','Public')) {
-        try {
-            $out     = Invoke-Exe 'netsh.exe' @('advfirewall', "show", "${prof}profile")
-            $stateOn = $out -match '(?m)^\s*State\s+ON'
-            $blockIn = $out -match '(?m)BlockInbound'
-            $vuln    = (-not $stateOn) -or (-not $blockIn)
-            $sev     = if ($vuln) { 'HIGH' } else { 'PASS' }
-            $obsOut  = if ($blockIn) { 'BlockInbound' } else { 'AllowInbound' }
-            $obsOut += if ($out -match 'AllowOutbound') { ',AllowOutbound' } else { ',BlockOutbound' }
+    if (-not $Script:IsAdmin) {
+        foreach ($prof in @('Domain','Private','Public')) {
             Add-Finding -Id "FW-$prof" -Category 'Firewall' -CheckName "$prof Firewall Policy" `
-                -Severity $sev -Vulnerable $vuln -Confidence 'High' `
-                -Observed $obsOut -Expected 'BlockInbound,AllowOutbound' `
+                -Severity 'HIGH' -Vulnerable $false -Confidence 'NoAccess' `
+                -Observed 'RequiresElevation' -Expected 'BlockInbound,AllowOutbound' `
                 -Source 'netsh advfirewall' `
-                -Fix "netsh advfirewall set ${prof}profile firewallpolicy blockinbound,allowoutbound"
-        } catch {
-            Add-Finding -Id "FW-$prof" -Category 'Firewall' -CheckName "$prof Firewall Policy" `
-                -Severity 'PASS' -Vulnerable $false -Confidence 'QueryFailed' `
-                -Observed 'netshFailed' -Expected 'BlockInbound,AllowOutbound' `
-                -Source 'netsh advfirewall'
+                -Note 'Firewall policy query via netsh requires administrator elevation.'
+        }
+    } else {
+        foreach ($prof in @('Domain','Private','Public')) {
+            try {
+                $out     = Invoke-Exe 'netsh.exe' @('advfirewall', "show", "${prof}profile")
+                $stateOn = $out -match '(?m)^\s*State\s+ON'
+                $blockIn = $out -match '(?m)BlockInbound'
+                $vuln    = (-not $stateOn) -or (-not $blockIn)
+                $sev     = if ($vuln) { 'HIGH' } else { 'PASS' }
+                $obsOut  = if ($blockIn) { 'BlockInbound' } else { 'AllowInbound' }
+                $obsOut += if ($out -match 'AllowOutbound') { ',AllowOutbound' } else { ',BlockOutbound' }
+                Add-Finding -Id "FW-$prof" -Category 'Firewall' -CheckName "$prof Firewall Policy" `
+                    -Severity $sev -Vulnerable $vuln -Confidence 'High' `
+                    -Observed $obsOut -Expected 'BlockInbound,AllowOutbound' `
+                    -Source 'netsh advfirewall' `
+                    -Fix "netsh advfirewall set ${prof}profile firewallpolicy blockinbound,allowoutbound"
+            } catch {
+                Add-Finding -Id "FW-$prof" -Category 'Firewall' -CheckName "$prof Firewall Policy" `
+                    -Severity 'PASS' -Vulnerable $false -Confidence 'QueryFailed' `
+                    -Observed 'netshFailed' -Expected 'BlockInbound,AllowOutbound' `
+                    -Source 'netsh advfirewall'
+            }
         }
     }
     try {

@@ -26,20 +26,27 @@ function Invoke-CheckForensics {
         -Fix "Set-ItemProperty '$auditKey' ProcessCreationIncludeCmdLine_Enabled 1" `
         -Note 'Required to capture full command lines in Event 4688.'
 
-    try {
-        $logOut  = Invoke-Exe 'wevtutil.exe' @('gl','Security')
-        $maxSize = 0
-        if ($logOut -match 'maxSize:\s*(\d+)') { $maxSize = [long]$Matches[1] }
-        $logV   = $maxSize -lt 268435456
-        $logSev = if ($logV) { 'LOW' } else { 'PASS' }
+    if (-not $Script:IsAdmin) {
         Add-Finding -Id 'SECLOG' -Category 'Forensics' -CheckName 'Security Log Max Size' `
-            -Severity $logSev -Vulnerable $logV -Confidence 'High' `
-            -Observed "maxSize=$maxSize" -Expected '>=256MB' -Source 'wevtutil' `
-            -Fix 'wevtutil sl Security /ms:268435456' `
-            -Note 'Small log sizes cause event overwrite during sustained incidents.'
-    } catch {
-        Add-Finding -Id 'SECLOG' -Category 'Forensics' -CheckName 'Security Log Max Size' `
-            -Severity 'PASS' -Vulnerable $false -Confidence 'QueryFailed' `
-            -Observed 'QueryFailed' -Expected '>=256MB' -Source 'wevtutil'
+            -Severity 'LOW' -Vulnerable $false -Confidence 'NoAccess' `
+            -Observed 'RequiresElevation' -Expected '>=256MB' -Source 'wevtutil' `
+            -Note 'Security event log query requires administrator elevation.'
+    } else {
+        try {
+            $logOut  = Invoke-Exe 'wevtutil.exe' @('gl','Security')
+            $maxSize = 0
+            if ($logOut -match 'maxSize:\s*(\d+)') { $maxSize = [long]$Matches[1] }
+            $logV   = $maxSize -lt 268435456
+            $logSev = if ($logV) { 'LOW' } else { 'PASS' }
+            Add-Finding -Id 'SECLOG' -Category 'Forensics' -CheckName 'Security Log Max Size' `
+                -Severity $logSev -Vulnerable $logV -Confidence 'High' `
+                -Observed "maxSize=$maxSize" -Expected '>=256MB' -Source 'wevtutil' `
+                -Fix 'wevtutil sl Security /ms:268435456' `
+                -Note 'Small log sizes cause event overwrite during sustained incidents.'
+        } catch {
+            Add-Finding -Id 'SECLOG' -Category 'Forensics' -CheckName 'Security Log Max Size' `
+                -Severity 'PASS' -Vulnerable $false -Confidence 'QueryFailed' `
+                -Observed 'QueryFailed' -Expected '>=256MB' -Source 'wevtutil'
+        }
     }
 }
