@@ -157,7 +157,9 @@ function Set-FindingImpactFlags {
                 }
             }
         '^(VBS|HVCI)$' {
-            "DRIVER RISK: Enabling Memory Integrity may prevent booting if incompatible kernel drivers are installed. Check Windows Security > Core Isolation for driver compatibility warnings before enabling."
+            if ($f._FixType -eq 'Auto') {
+                "DRIVER RISK: Enabling Memory Integrity may prevent booting if incompatible kernel drivers are installed. Check Windows Security > Core Isolation for driver compatibility warnings before enabling."
+            }
         }
         '^CG$' {
             "COMPATIBILITY: Credential Guard breaks NTLM delegation and RDP with saved credentials in some configurations. Verify before enabling on domain-joined machines."

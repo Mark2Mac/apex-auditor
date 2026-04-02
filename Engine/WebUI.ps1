@@ -429,7 +429,7 @@ function findingCard(f){
   const fixed=!f.Vulnerable;
   const btnClass={'SAFE':'btn-safe','CAUTION':'btn-caut','RISKY':'btn-risk'}[tier]||'btn-caut';
   const recTag=f.Recommendation?'<span class="rec-tag '+h(f.Recommendation)+'">'+h(f.Recommendation)+'</span>':'';
-  const fixType=(f._FixType||'Auto');
+  const fixType=(f._FixType||'None');
   const fixBadge=f.Fix&&f.Fix!=='N/A'?'<span class="fix-badge '+fixType.toLowerCase()+'">'+fixType+'</span>':'';
   let actions='';
   if(f.Vulnerable){
@@ -443,7 +443,7 @@ function findingCard(f){
         '<div id="'+gid+'" class="guide-steps" style="display:none"><ol>'+
         f._Guide.map(s=>'<li>'+h(s)+'</li>').join('')+'</ol></div>':'';
       actions='<div class="actions"><span class="fix-badge manual" style="font-size:11px;padding:3px 10px">Manual</span>'+shortcutBtn+guideToggle+'</div>'+guideBody;
-    } else {
+    } else if(fixType==='Auto'){
       actions='<div class="actions"><button class="btn '+btnClass+'" onclick="doFix(\''+h(f.Id)+'\',\''+tier+'\',this)" title="Tier: '+tier+' | Permanent change">Fix ['+tier+']</button></div>';
     }
   } else if(f._FixedAt){
