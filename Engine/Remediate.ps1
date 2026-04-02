@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # =============================================================================
 #  APEX Audit Engine -- Remediate.ps1
 #  Interactive remediation loop with backup and undo capabilities.
@@ -13,7 +13,7 @@
 #  Findings not in this map default to CAUTION.
 # ---------------------------------------------------------------------------
 $Script:SafetyTiers = @{
-    # SAFE — simple registry value writes
+    # SAFE -- simple registry value writes
     WDIG                       = 'SAFE'
     PSLOG                      = 'SAFE'
     CMDLINE                    = 'SAFE'
@@ -34,7 +34,7 @@ $Script:SafetyTiers = @{
     ASR                        = 'SAFE'
     PUA                        = 'SAFE'
     CFA                        = 'SAFE'
-    # CAUTION — may affect connectivity or legacy apps
+    # CAUTION -- may affect connectivity or legacy apps
     LLMNR                      = 'CAUTION'
     NETBIOS                    = 'CAUTION'
     SMBENC                     = 'CAUTION'
@@ -46,7 +46,7 @@ $Script:SafetyTiers = @{
     'FW-Public'                = 'CAUTION'
     'FW-SVC'                   = 'CAUTION'
     LAPS                       = 'CAUTION'
-    # RISKY — reboot, encryption, or irreversible
+    # RISKY -- reboot, encryption, or irreversible
     PPL                        = 'RISKY'
     BLENC                      = 'RISKY'
     BLPBA                      = 'RISKY'
@@ -159,7 +159,7 @@ function Backup-FindingState {
 function Invoke-RemediationLoop {
     <#
     .SYNOPSIS
-        Interactive loop: iterates vulnerable findings CRITICAL→LOW, prompts for each fix.
+        Interactive loop: iterates vulnerable findings CRITICAL->LOW, prompts for each fix.
     .OUTPUTS
         [PSCustomObject] Summary with Applied, Skipped, Failed counts and BackupDir.
     #>
@@ -202,11 +202,24 @@ function Invoke-RemediationLoop {
     foreach ($f in $vulnFindings) {
         $tier = if ($SafetyTiers.ContainsKey($f.Id)) { $SafetyTiers[$f.Id] } else { 'CAUTION' }
 
+        # Skip findings whose Fix is a text description, not an executable command
+        $isManual = $f.Fix -and (($f.Fix.TrimEnd() -match '\.$') -or ($f.Fix -match '<[A-Za-z_][^>]+>'))
+        if ($isManual) {
+            Write-TUI "  [MANUAL]    $($f.Id) -- fix requires manual action: $($f.Fix)" -Color DarkYellow
+            $skipped++
+            continue
+        }
+
+        # Show compatibility/impact warning if peripherals were affected
+        if ($f.PSObject.Properties['_ImpactWarning'] -and $f._ImpactWarning) {
+            Write-TUI "  [!] $($f._ImpactWarning)" -Color Yellow
+        }
+
         # Auto-apply SAFE tier when [A] was pressed
         if ($autoSafe -and $tier -eq 'SAFE') {
             $backFile = Backup-FindingState -Finding $f -BackupDir $BackupDir
             try {
-                Invoke-Expression $f.Fix | Out-Null
+                $null = Invoke-FindingFix -Expression $f.Fix -FindingId $f.Id
                 Write-TUI "  [AUTO-SAFE] $($f.Id) applied." -Color Green
                 $applied++
             } catch {
@@ -243,7 +256,7 @@ function Invoke-RemediationLoop {
             if ($ans -eq 'YES') {
                 $backFile = Backup-FindingState -Finding $f -BackupDir $BackupDir
                 try {
-                    Invoke-Expression $f.Fix | Out-Null
+                    $null = Invoke-FindingFix -Expression $f.Fix -FindingId $f.Id
                     Write-TUI "  [APPLIED]   $($f.Id)" -Color Green
                     $applied++
                 } catch {
@@ -262,7 +275,7 @@ function Invoke-RemediationLoop {
             'Y' {
                 $backFile = Backup-FindingState -Finding $f -BackupDir $BackupDir
                 try {
-                    Invoke-Expression $f.Fix | Out-Null
+                    $null = Invoke-FindingFix -Expression $f.Fix -FindingId $f.Id
                     Write-TUI "  [APPLIED]   $($f.Id)" -Color Green
                     $applied++
                 } catch {
@@ -275,7 +288,7 @@ function Invoke-RemediationLoop {
                     $autoSafe = $true
                     $backFile = Backup-FindingState -Finding $f -BackupDir $BackupDir
                     try {
-                        Invoke-Expression $f.Fix | Out-Null
+                        $null = Invoke-FindingFix -Expression $f.Fix -FindingId $f.Id
                         Write-TUI "  [APPLIED]   $($f.Id) (auto-safe enabled for remaining SAFE fixes)" -Color Green
                         $applied++
                     } catch {
@@ -306,6 +319,7 @@ function Invoke-RemediationLoop {
         if ($ans.ToUpper() -in @('S','Q')) { break }
     }
 
+    Write-Log "REMEDIATION SUMMARY applied=$applied skipped=$skipped failed=$failed"
     Write-TUILine
     Write-TUI "  REMEDIATION SUMMARY" -Color Cyan
     Write-TUI "    Applied  : $applied" -Color Green
@@ -313,6 +327,9 @@ function Invoke-RemediationLoop {
     Write-TUI "    Failed   : $failed"  -Color $(if ($failed -gt 0) { 'Red' } else { 'DarkGray' })
     Write-TUI "    Backups  : $BackupDir" -Color DarkCyan
     Write-TUI '  Re-run audit to verify applied fixes.' -Color DarkCyan
+    if ($failed -gt 0 -and $Script:LogFile -and (Test-Path $Script:LogFile -ErrorAction SilentlyContinue)) {
+        Write-TUI "    Log file : $Script:LogFile  (temporary -- deleted on clean exit)" -Color Yellow
+    }
     Write-TUILine
 
     return [PSCustomObject]@{

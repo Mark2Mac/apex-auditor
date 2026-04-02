@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     APEX Zero-Trust Enterprise Audit v3.0 -- standalone Windows security posture scanner.
@@ -103,7 +103,7 @@ param(
 Set-StrictMode -Off
 $ErrorActionPreference = 'Stop'
 
-# Portable flag without an explicit path → default to script's own directory
+# Portable flag without an explicit path -> default to script's own directory
 if ($PSBoundParameters.ContainsKey('Portable') -and ($Portable -eq '')) {
     $Portable = $PSScriptRoot
 }
@@ -117,6 +117,7 @@ $Script:RootDir = $PSScriptRoot
 . (Join-Path $Script:RootDir 'Engine\Core.ps1')
 . (Join-Path $Script:RootDir 'Engine\Report.ps1')
 . (Join-Path $Script:RootDir 'Engine\Remediate.ps1')
+. (Join-Path $Script:RootDir 'Engine\CompatScan.ps1')
 if ($WebUI) { . (Join-Path $Script:RootDir 'Engine\WebUI.ps1') }
 
 $checkFiles = Get-ChildItem -Path (Join-Path $Script:RootDir 'Checks') -Filter 'Check-*.ps1' |
@@ -126,10 +127,16 @@ foreach ($f in $checkFiles) { . $f.FullName }
 # ---------------------------------------------------------------------------
 #  CONSTANTS
 # ---------------------------------------------------------------------------
-$Script:TOOL_VERSION  = '4.0.0'
-$Script:BUILD_DATE    = '2026-03-31'
+$Script:TOOL_VERSION  = '4.9'
+$Script:BUILD_DATE    = '2026-04-01'
 $Script:SCORE_WEIGHTS = @{ CRITICAL=15; HIGH=8; MEDIUM=5; LOW=2 }
 $Script:CimSession    = $null
+
+# Initialize ephemeral log in TEMP -- auto-deleted on clean exit via Remove-LogFile
+try {
+    $Script:LogFile = Join-Path $env:TEMP "apex_audit_$((Get-Date).ToString('yyyyMMdd_HHmmss')).log"
+    Write-Log "APEX v$Script:TOOL_VERSION started. Admin=$Script:IsAdmin Host=$env:COMPUTERNAME"
+} catch { $Script:LogFile = $null }
 
 # ---------------------------------------------------------------------------
 #  CHECK MANIFEST
@@ -206,7 +213,7 @@ function Show-ColoredHelp {
     Write-Host ''
     Write-Host '  COMPARISON & BASELINE' -ForegroundColor $c
     Write-Host '    -CompareTo <path>          ' -NoNewline -ForegroundColor $w
-    Write-Host 'Compare against a previous report (shows Δ Delta tab)'   -ForegroundColor $g
+    Write-Host 'Compare against a previous report (shows Delta Delta tab)'   -ForegroundColor $g
     Write-Host '    -Baseline <path>           ' -NoNewline -ForegroundColor $w
     Write-Host 'Save this report as baseline for future comparisons'      -ForegroundColor $g
     Write-Host ''
@@ -224,7 +231,7 @@ function Show-ColoredHelp {
     Write-Host '    # Enterprise server, JSON only, no browser:'                  -ForegroundColor $dc
     Write-Host '    .\Windows_Audit.ps1 -Mode Deep -Profile Enterprise -NoTUI -SkipHTML' -ForegroundColor $y
     Write-Host ''
-    Write-Host '    # USB portable scan — all files on the stick, clean exit:'    -ForegroundColor $dc
+    Write-Host '    # USB portable scan -- all files on the stick, clean exit:'    -ForegroundColor $dc
     Write-Host '    .\Windows_Audit.ps1 -Portable E:\AuditResults -CleanOnExit'   -ForegroundColor $y
     Write-Host ''
     Write-Host '    # Compare against last month''s baseline:'                     -ForegroundColor $dc
@@ -274,10 +281,10 @@ try {
     try   { $Script:CimSession = New-CimSession -ErrorAction Stop }
     catch { $Script:CimSession = $null; Write-TUI '[!] CIM session unavailable -- direct WMI fallback active' -Color Yellow }
 
-    $baseline = $null
+    $baselineData = $null
     if ($CompareTo -ne '') {
         Write-TUI "[*] Loading baseline: $CompareTo"
-        $baseline = Read-BaselineJSON -Path $CompareTo
+        $baselineData = Read-BaselineJSON -Path $CompareTo
     }
 
     if (-not $Script:IsAdmin -and -not $Script:InGuidedMode) {
@@ -311,6 +318,17 @@ try {
         PSVersion       = $PSVersionTable.PSVersion.ToString()
     }
 
+    # Peripheral and network dependency detection (no admin required)
+    $Script:Peripherals = Get-SystemPeripherals
+    if ($Script:Peripherals.Printers.Count -gt 0) {
+        $pSummary = "$($Script:Peripherals.LocalPrinters) local, $($Script:Peripherals.NetworkPrinters) network"
+        if ($Script:Peripherals.SharedPrinters -gt 0) { $pSummary += ", $($Script:Peripherals.SharedPrinters) shared" }
+        Write-TUI "  Printers         : $($Script:Peripherals.Printers.Count) ($pSummary)" -Color DarkCyan
+    }
+    if ($Script:Peripherals.SharedFolders.Count -gt 0) {
+        Write-TUI "  Shared folders   : $($Script:Peripherals.SharedFolders.Count)" -Color DarkCyan
+    }
+
     $jsonPath = Resolve-ExportPath
     $htmlPath = if ($ExportHTML -ne '') { $ExportHTML } else { [System.IO.Path]::ChangeExtension($jsonPath, '.html') }
 
@@ -327,10 +345,12 @@ try {
     $mapFile = Join-Path $Script:RootDir 'compliance_map.json'
     Get-ComplianceRefs -MapPath $mapFile
     Set-FindingRecommendations -Findings $Script:Findings -Profile $Profile
+    Set-FindingImpactFlags     -Findings $Script:Findings -Peripherals $Script:Peripherals
+    Set-FindingGuides          -Findings $Script:Findings
 
     Write-TUI '[*] Phase 3/4  Score    -- computing Severity + Hygiene + Delta'
     $scores    = Measure-AuditScore    -Findings $Script:Findings
-    $delta     = Compare-AuditBaseline -Baseline $baseline -CurrentFindings $Script:Findings -CurrentScores $scores
+    $delta     = Compare-AuditBaseline -Baseline $baselineData -CurrentFindings $Script:Findings -CurrentScores $scores
     $vulnCount = @($Script:Findings | Where-Object { $_.Vulnerable }).Count
 
     if ($delta -and -not $NoTUI) {
@@ -353,6 +373,7 @@ try {
         ScoreAfter   = -1
         Delta        = $delta
         Findings     = @($Script:Findings)
+        Peripherals  = $Script:Peripherals
     }
     if ($ShowSignals) {
         try {
@@ -375,17 +396,6 @@ try {
         }
     }
 
-    if ($Baseline -ne '') {
-        try {
-            $bDir = Split-Path $Baseline -Parent
-            if ($bDir -and -not (Test-Path $bDir)) { New-Item -ItemType Directory -Path $bDir -Force | Out-Null }
-            # Copy the already-written JSON rather than re-serializing ($payload hashtable
-            # cannot be safely serialized twice in PS 5.1 when it contains List<T> members)
-            Copy-Item -Path $jsonPath -Destination $Baseline -Force -ErrorAction Stop
-            Write-Warning "Baseline saved: $Baseline"
-        } catch { Write-Warning "[!] Could not save baseline to '$Baseline': $($_.Exception.Message)" }
-    }
-
     # ---------------------------------------------------------------------------
     #  WEB DASHBOARD MODE: interactive localhost dashboard (supersedes remediation)
     # ---------------------------------------------------------------------------
@@ -405,6 +415,20 @@ try {
     }
 
     # ---------------------------------------------------------------------------
+    #  BASELINE SAVE: after guided post-scan so $Baseline from wizard is honored
+    # ---------------------------------------------------------------------------
+    if ($Baseline -ne '') {
+        try {
+            $bDir = Split-Path $Baseline -Parent
+            if ($bDir -and -not (Test-Path $bDir)) { New-Item -ItemType Directory -Path $bDir -Force | Out-Null }
+            # Copy the already-written JSON rather than re-serializing ($payload hashtable
+            # cannot be safely serialized twice in PS 5.1 when it contains List<T> members)
+            Copy-Item -Path $jsonPath -Destination $Baseline -Force -ErrorAction Stop
+            Write-TUI "  [*] Baseline saved: $Baseline" -Color Cyan
+        } catch { Write-Warning "[!] Could not save baseline to '$Baseline': $($_.Exception.Message)" }
+    }
+
+    # ---------------------------------------------------------------------------
     #  REMEDIATION MODE: interactive fix loop after report
     # ---------------------------------------------------------------------------
     if ($Remediate -and -not $WebUI) {
@@ -419,6 +443,7 @@ try {
     $exitCode = if ($vulnCount -eq 0) { 0 } else { 1 }
 
 } catch {
+    Write-Log "APEX Audit fatal error: $($_.Exception.Message)" -Level ERROR
     Write-Warning "APEX Audit fatal error: $($_.Exception.Message)"
     $exitCode = 2
 } finally {
@@ -432,6 +457,7 @@ try {
             }
         }
     }
+    Remove-LogFile   # ephemeral log -- deleted on clean exit
 }
 
 exit $exitCode

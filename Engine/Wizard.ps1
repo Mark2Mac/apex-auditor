@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # =============================================================================
 #  APEX Audit Engine -- Wizard.ps1
 #  Guided terminal wizard: environment detection, profile/mode selection,
@@ -19,10 +19,10 @@ function Invoke-GuidedMode {
 
     # --- Banner ---
     Write-Host ''
-    Write-Host '  ╔══════════════════════════════════════════════════════════════╗' -ForegroundColor Cyan
-    Write-Host "  ║   APEX Zero-Trust Windows Auditor v$($Script:TOOL_VERSION)  ($($Script:BUILD_DATE))   ║" -ForegroundColor Cyan
-    Write-Host '  ║   Guided Setup                                               ║' -ForegroundColor Cyan
-    Write-Host '  ╚══════════════════════════════════════════════════════════════╝' -ForegroundColor Cyan
+    Write-Host '  +==============================================================+' -ForegroundColor Cyan
+    Write-Host "  |   APEX Zero-Trust Windows Auditor v$($Script:TOOL_VERSION)  ($($Script:BUILD_DATE))   |" -ForegroundColor Cyan
+    Write-Host '  |   Guided Setup                                               |' -ForegroundColor Cyan
+    Write-Host '  +==============================================================+' -ForegroundColor Cyan
     Write-Host ''
 
     # --- Environment detection ---
@@ -47,7 +47,7 @@ function Invoke-GuidedMode {
     Write-Host ''
     Write-Host '  Environment detected:' -ForegroundColor White
     Write-Host "    OS         : $osName (Build $build)" -ForegroundColor DarkGray
-    Write-Host "    Admin      : $(if ($isAdmin) { 'Yes (elevated)' } else { 'No — limited mode (see below)' })" `
+    Write-Host "    Admin      : $(if ($isAdmin) { 'Yes (elevated)' } else { 'No - limited mode (see below)' })" `
                -ForegroundColor (if ($isAdmin) { 'Green' } else { 'Yellow' })
     Write-Host "    Domain     : $(if ($domain) { 'Joined' } else { 'Not joined' })" -ForegroundColor DarkGray
     Write-Host "    Chassis    : $chassis" -ForegroundColor DarkGray

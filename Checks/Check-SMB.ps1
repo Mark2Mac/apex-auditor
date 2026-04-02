@@ -18,14 +18,18 @@ function Invoke-CheckSMB {
         }
         return
     }
+    # Cache the server configuration once to avoid 3 separate WMI round-trips
+    $srvCfg = $null
+    try { $srvCfg = Get-SmbServerConfiguration -ErrorAction Stop } catch { }
+
     # SMBv1
     try {
-        $srv  = Get-SmbServerConfiguration -ErrorAction Stop
-        $feat = Get-WindowsOptionalFeature -Online -FeatureName 'SMB1Protocol' -ErrorAction SilentlyContinue
+        if (-not $srvCfg) { throw 'SmbServerConfiguration unavailable' }
+        $feat      = Get-WindowsOptionalFeature -Online -FeatureName 'SMB1Protocol' -ErrorAction SilentlyContinue
         $featState = if ($feat) { $feat.State } else { 'Unknown' }
         Add-Finding -Id 'SMB1' -Category 'SMB' -CheckName 'SMBv1 Protocol' `
-            -Severity 'CRITICAL' -Vulnerable $srv.EnableSMB1Protocol -Confidence 'High' `
-            -Observed "ServerSMBv1=$($srv.EnableSMB1Protocol) ClientFeature=$featState" `
+            -Severity 'CRITICAL' -Vulnerable $srvCfg.EnableSMB1Protocol -Confidence 'High' `
+            -Observed "ServerSMBv1=$($srvCfg.EnableSMB1Protocol) ClientFeature=$featState" `
             -Expected 'Disabled' -Source 'Get-SmbServerConfiguration' `
             -Fix 'Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force' `
             -Note 'SMBv1 is the EternalBlue/WannaCry attack vector. Disable unconditionally.'
@@ -37,7 +41,8 @@ function Invoke-CheckSMB {
 
     # SMB signing - server
     try {
-        $sig = (Get-SmbServerConfiguration -ErrorAction Stop).RequireSecuritySignature
+        if (-not $srvCfg) { throw 'SmbServerConfiguration unavailable' }
+        $sig = $srvCfg.RequireSecuritySignature
         Add-Finding -Id 'SMBSIGS' -Category 'SMB' -CheckName 'SMB Signing (Server Required)' `
             -Severity 'MEDIUM' -Vulnerable (-not $sig) -Confidence 'High' `
             -Observed "RequireSecuritySignature=$sig" -Expected 'True' `
@@ -66,7 +71,8 @@ function Invoke-CheckSMB {
 
     # SMB encryption (server-side) [Sprint D]
     try {
-        $enc = (Get-SmbServerConfiguration -ErrorAction Stop).EncryptData
+        if (-not $srvCfg) { throw 'SmbServerConfiguration unavailable' }
+        $enc = $srvCfg.EncryptData
         Add-Finding -Id 'SMBENC' -Category 'SMB' -CheckName 'SMB Encryption (Server)' `
             -Severity 'LOW' -Vulnerable (-not $enc) -Confidence 'High' `
             -Observed "EncryptData=$enc" -Expected 'True' `

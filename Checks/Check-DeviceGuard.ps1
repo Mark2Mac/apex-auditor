@@ -10,11 +10,16 @@ function Invoke-CheckDeviceGuard {
     try {
         $dg = Get-Cim 'Win32_DeviceGuard' -Namespace 'root\Microsoft\Windows\DeviceGuard'
 
+        $vbsObs  = if ($null -ne $dg.VirtualizationBasedSecurityStatus)        { "$($dg.VirtualizationBasedSecurityStatus)" }  else { 'Unknown' }
+        $hvciObs = if ($null -ne $dg.HypervisorEnforcedCodeIntegrityStatus)     { "$($dg.HypervisorEnforcedCodeIntegrityStatus)" } else { 'Unknown' }
+        $umciObs = if ($null -ne $dg.CodeIntegrityPolicyEnforcementStatus)      { "$($dg.CodeIntegrityPolicyEnforcementStatus)" } else { 'Unknown' }
+        $cgObs   = if ($null -ne $dg.SecurityServicesRunning -and @($dg.SecurityServicesRunning).Count -gt 0) { ($dg.SecurityServicesRunning -join ',') } else { 'Unknown' }
+
         Add-Finding -Id 'VBS' -Category 'DeviceGuard' -CheckName 'VBS' `
             -Severity 'CRITICAL' `
             -Vulnerable ($dg.VirtualizationBasedSecurityStatus -ne 2) `
             -Confidence 'High' `
-            -Observed "$($dg.VirtualizationBasedSecurityStatus)" -Expected '2 (Running)' `
+            -Observed $vbsObs -Expected '2 (Running)' `
             -Source 'CIM Win32_DeviceGuard' `
             -Fix 'Enable VBS in Windows Security > Core Isolation > Memory Integrity.' `
             -Note 'VBS is the foundation of Credential Guard and HVCI.'
@@ -23,7 +28,7 @@ function Invoke-CheckDeviceGuard {
             -Severity 'HIGH' `
             -Vulnerable ($dg.HypervisorEnforcedCodeIntegrityStatus -ne 2) `
             -Confidence 'High' `
-            -Observed "$($dg.HypervisorEnforcedCodeIntegrityStatus)" -Expected '2 (Enforced)' `
+            -Observed $hvciObs -Expected '2 (Enforced)' `
             -Source 'CIM Win32_DeviceGuard' `
             -Fix 'Enable Memory Integrity in Windows Security > Core Isolation.' `
             -Note 'HVCI blocks kernel-mode code injection attacks.'
@@ -32,7 +37,7 @@ function Invoke-CheckDeviceGuard {
             -Severity 'LOW' `
             -Vulnerable ($dg.CodeIntegrityPolicyEnforcementStatus -ne 2) `
             -Confidence 'High' `
-            -Observed "UMCI=$($dg.CodeIntegrityPolicyEnforcementStatus)" -Expected '2 (Enforced)' `
+            -Observed "UMCI=$umciObs" -Expected '2 (Enforced)' `
             -Source 'CIM Win32_DeviceGuard' `
             -Fix 'Deploy WDAC policy if you want strict app control.' `
             -Note 'Not auto-applied; needs policy design.'
@@ -41,7 +46,7 @@ function Invoke-CheckDeviceGuard {
             -Severity 'MEDIUM' `
             -Vulnerable ($dg.SecurityServicesRunning -notcontains 1) `
             -Confidence 'High' `
-            -Observed "Running=$($dg.SecurityServicesRunning -join ',')" -Expected 'Includes 1' `
+            -Observed "Running=$cgObs" -Expected 'Includes 1' `
             -Source 'CIM Win32_DeviceGuard' `
             -Fix 'Enable Credential Guard (requires reboot).' `
             -Note 'Hardens credential theft resistance.'

@@ -6,7 +6,7 @@
 function Invoke-CheckLocalAdmins {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns','')]
     param()
-    $memberNames = @(); $memberCount = 0; $sourceUsed = ''; $parseOk = $false
+    $memberNames = [System.Collections.Generic.List[string]]::new(); $memberCount = 0; $sourceUsed = ''; $parseOk = $false
 
     try {
         $members     = @(Get-LocalGroupMember -Group 'Administrators' -ErrorAction Stop)
@@ -18,13 +18,17 @@ function Invoke-CheckLocalAdmins {
 
     if (-not $parseOk) {
         try {
-            $netOut = Invoke-Exe 'net.exe' @('localgroup','Administrators')
+            # Resolve the Administrators group by well-known SID (S-1-5-32-544) so this
+            # works on non-English Windows where the group name is localized.
+            $adminSid   = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')
+            $adminGroup = $adminSid.Translate([System.Security.Principal.NTAccount]).Value.Split('\')[-1]
+            $netOut = Invoke-Exe 'net.exe' @('localgroup', $adminGroup)
             if ($netOut) {
                 $inMembers = $false
                 foreach ($line in ($netOut -split "`r?`n")) {
-                    if ($line -match '^-{5,}')                { $inMembers = $true; continue }
-                    if ($inMembers -and $line -match 'The command completed') { break }
-                    if ($inMembers -and $line.Trim())         { $memberNames += $line.Trim() }
+                    if ($line -match '^-{5,}')   { $inMembers = $true; continue }
+                    if ($inMembers -and $line -match '^\s*$') { break }   # blank line before footer
+                    if ($inMembers -and $line.Trim()) { $memberNames.Add($line.Trim()) }
                 }
                 $memberCount = $memberNames.Count
                 $sourceUsed  = 'net.exe localgroup'

@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # =============================================================================
 #  APEX Audit Engine -- WebUI.ps1
 #  HttpListener-based local web server serving an interactive SPA dashboard.
@@ -18,7 +18,7 @@ function Find-AvailablePort {
             return $p
         } catch { }
     }
-    return 8600   # fallback — HttpListener will fail descriptively if taken
+    return 8600   # fallback -- HttpListener will fail descriptively if taken
 }
 
 function Send-JsonResponse {
@@ -34,6 +34,8 @@ function Send-JsonResponse {
         $Response.StatusCode    = $StatusCode
         $Response.ContentType   = 'application/json; charset=utf-8'
         $Response.ContentLength64 = $buffer.LongLength
+        $Response.Headers.Add('X-Content-Type-Options', 'nosniff')
+        $Response.Headers.Add('X-Frame-Options', 'DENY')
         $Response.OutputStream.Write($buffer, 0, $buffer.Length)
     } catch { }
     finally  { try { $Response.OutputStream.Close() } catch { } }
@@ -49,6 +51,8 @@ function Send-HtmlResponse {
         $Response.StatusCode    = 200
         $Response.ContentType   = 'text/html; charset=utf-8'
         $Response.ContentLength64 = $buffer.LongLength
+        $Response.Headers.Add('X-Content-Type-Options', 'nosniff')
+        $Response.Headers.Add('X-Frame-Options', 'DENY')
         $Response.OutputStream.Write($buffer, 0, $buffer.Length)
     } catch { }
     finally  { try { $Response.OutputStream.Close() } catch { } }
@@ -125,8 +129,9 @@ function Invoke-WebFix {
         Send-JsonResponse $Response @{ success=$false; requiresConfirm=$true; tier=$tier } 428
         return
     }
-    if (-not $f.Fix -or $f.Fix -eq 'N/A') {
-        Send-JsonResponse $Response @{ success=$false; error='No fix available for this finding' } 422
+    if (-not $f.Fix -or $f.Fix -eq 'N/A' -or
+        ($f.Fix.TrimEnd() -match '\.$') -or ($f.Fix -match '<[A-Za-z_][^>]+>')) {
+        Send-JsonResponse $Response @{ success=$false; error='Fix requires manual action -- see finding description' } 422
         return
     }
 
@@ -141,7 +146,7 @@ function Invoke-WebFix {
 
     # Execute fix
     try {
-        Invoke-Expression $f.Fix | Out-Null
+        $null = Invoke-FindingFix -Expression $f.Fix -FindingId $FindingId
         $f.Vulnerable = $false
         $f | Add-Member -NotePropertyName '_OrigSeverity' -NotePropertyValue $f.Severity -Force
         $f.Severity   = 'PASS'
@@ -205,7 +210,7 @@ function Invoke-WebUndo {
         }
         $f.Vulnerable = $true
         if ($f.Severity -eq 'PASS') {
-            # Restore the severity — look up from a fresh check would be ideal; use tag if available
+            # Restore the severity -- look up from a fresh check would be ideal; use tag if available
             $f.Severity = if ($f.PSObject.Properties['_OrigSeverity']) { $f._OrigSeverity } else { 'MEDIUM' }
         }
         Send-JsonResponse $Response @{ success=$true; findingId=$FindingId; message='Undo applied' }
@@ -231,6 +236,10 @@ function Invoke-WebRescan {
         }
         Get-ComplianceRefs  -MapPath $MapPath
         Set-FindingRecommendations -Findings $Findings -Profile $Profile
+        if ($Script:Peripherals) {
+            Set-FindingImpactFlags -Findings $Findings -Peripherals $Script:Peripherals
+        }
+        Set-FindingGuides -Findings $Findings
         Send-JsonResponse $Response @{
             success      = $true
             findingCount = $Findings.Count
@@ -320,6 +329,18 @@ body{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSyst
 .qa-btn{padding:5px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600}
 .qa-safe{background:#0d3320;color:var(--grn);border:1px solid #1a6640}.qa-safe:hover{background:#1a4d30}
 .qa-caut{background:#3d2200;color:var(--ora);border:1px solid #7a4400}.qa-caut:hover{background:#4d2d00}
+.impact-warn{background:#3d2200;border:1px solid #7a4400;border-radius:4px;padding:6px 10px;font-size:12px;color:var(--ora);margin:6px 0}
+.fix-badge{font-size:10px;padding:1px 6px;border-radius:3px;font-family:monospace;margin-left:6px;vertical-align:middle}
+.fix-badge.auto{border:1px solid var(--grn);color:var(--grn)}
+.fix-badge.manual{border:1px solid var(--yel);color:var(--yel)}
+.fix-badge.none{border:1px solid var(--tx2);color:var(--tx2)}
+.guide-toggle{background:none;border:1px solid var(--yel);color:var(--yel);border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer;font-family:monospace}
+.guide-toggle:hover{background:#3d3200}
+.guide-steps{margin:4px 0;padding:8px 12px;background:#1a1a00;border:1px solid #3d3800;border-radius:4px;font-size:12px;color:var(--tx1)}
+.guide-steps ol{margin:4px 0 0 0;padding-left:18px}
+.guide-steps li{margin-bottom:3px;line-height:1.5}
+.btn-launch{background:#0d2033;color:#5bc8f5;border:1px solid #1a4466;padding:4px 12px;border-radius:4px;font-size:11px;cursor:pointer;font-family:monospace;font-weight:600}
+.btn-launch:hover{background:#1a3044}
 </style>
 </head>
 <body>
@@ -334,7 +355,7 @@ body{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSyst
 <div class="toast-ctr" id="toasts"></div>
 <div id="modal-bg" style="display:none" class="modal-bg"></div>
 <div class="search-wrap">
-  <input type="text" id="search" placeholder="Search findings (ID, name, category, note)..." oninput="render()">
+  <input type="text" id="search" placeholder="Search findings (ID, name, category, note)..." oninput="debounceRender()">
 </div>
 <div class="wrap">
   <div id="summary" class="summary-grid"></div>
@@ -347,9 +368,10 @@ body{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSyst
 </div>
 <script>
 const BASE = '$BaseUrl';
-let D = null, tab = 'vuln', pollTimer = null;
+let D = null, tab = 'vuln', pollTimer = null, pollFails = 0, renderTimer = null;
+function debounceRender(){clearTimeout(renderTimer);renderTimer=setTimeout(render,200);}
 
-function h(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function h(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 function sev(s){const m={CRITICAL:'var(--red)',HIGH:'var(--ora)',MEDIUM:'var(--yel)',LOW:'var(--cya)',PASS:'var(--grn)'};return m[s]||'var(--tx)'}
 function scoreClass(n){return n>=80?'ok':n>=60?'warn':'bad'}
 
@@ -377,13 +399,18 @@ function renderScores(scores){
 }
 
 function renderSummary(findings){
-  const cnt={CRITICAL:0,HIGH:0,MEDIUM:0,LOW:0,PASS:0};
-  findings.forEach(f=>{ if(cnt[f.Severity]!==undefined) cnt[f.Severity]++; });
-  const col={CRITICAL:'var(--red)',HIGH:'var(--ora)',MEDIUM:'var(--yel)',LOW:'var(--cya)',PASS:'var(--grn)'};
+  const vuln={CRITICAL:0,HIGH:0,MEDIUM:0,LOW:0};
+  let pass=0;
+  findings.forEach(f=>{
+    if(f.Vulnerable && vuln[f.Severity]!==undefined) vuln[f.Severity]++;
+    else if(!f.Vulnerable) pass++;
+  });
+  const col={CRITICAL:'var(--red)',HIGH:'var(--ora)',MEDIUM:'var(--yel)',LOW:'var(--cya)'};
   document.getElementById('summary').innerHTML=
-    Object.entries(cnt).map(([s,n])=>
-      '<div class="scard"><div class="n" style="color:'+col[s]+'">'+n+'</div><div class="l">'+s+'</div></div>'
-    ).join('');
+    Object.entries(vuln).map(([s,n])=>
+      '<div class="scard"><div class="n" style="color:'+(n?col[s]:'var(--tx2)')+'">'+n+'</div><div class="l">'+s+'</div></div>'
+    ).join('')+
+    '<div class="scard"><div class="n" style="color:var(--grn)">'+pass+'</div><div class="l">PASS</div></div>';
 }
 
 function compBadges(f){
@@ -401,15 +428,29 @@ function findingCard(f){
   const fixed=!f.Vulnerable;
   const btnClass={'SAFE':'btn-safe','CAUTION':'btn-caut','RISKY':'btn-risk'}[tier]||'btn-caut';
   const recTag=f.Recommendation?'<span class="rec-tag '+h(f.Recommendation)+'">'+h(f.Recommendation)+'</span>':'';
+  const fixType=(f._FixType||'Auto');
+  const fixBadge=f.Fix&&f.Fix!=='N/A'?'<span class="fix-badge '+fixType.toLowerCase()+'">'+fixType+'</span>':'';
   let actions='';
   if(f.Vulnerable){
-    actions='<div class="actions"><button class="btn '+btnClass+'" onclick="doFix(\''+h(f.Id)+'\',\''+tier+'\',this)" title="Tier: '+tier+'">Fix ['+tier+']</button></div>';
+    if(fixType==='Manual'){
+      const gid='g'+h(f.Id).replace(/[^a-z0-9]/gi,'_');
+      const shortcutBtn=(f._Shortcut&&f._Shortcut.Cmd)?
+        '<button class="btn-launch" onclick="doLaunch(\''+h(f.Id)+'\')" title="'+h((f._Shortcut&&f._Shortcut.Label)||'Open Settings')+'">&#9881; '+h((f._Shortcut&&f._Shortcut.Label)||'Open Settings')+'</button>':'';
+      const guideToggle=(f._Guide&&f._Guide.length)?
+        '<button class="guide-toggle" id="gt-'+gid+'" onclick="toggleGuide(\''+gid+'\')">&#9660; Step-by-step guide</button>':'';
+      const guideBody=(f._Guide&&f._Guide.length)?
+        '<div id="'+gid+'" class="guide-steps" style="display:none"><ol>'+
+        f._Guide.map(s=>'<li>'+h(s)+'</li>').join('')+'</ol></div>':'';
+      actions='<div class="actions"><span class="fix-badge manual" style="font-size:11px;padding:3px 10px">Manual</span>'+shortcutBtn+guideToggle+'</div>'+guideBody;
+    } else {
+      actions='<div class="actions"><button class="btn '+btnClass+'" onclick="doFix(\''+h(f.Id)+'\',\''+tier+'\',this)" title="Tier: '+tier+' | Permanent change">Fix ['+tier+']</button></div>';
+    }
   } else if(f._FixedAt){
     actions='<div class="actions"><button class="btn btn-undo" onclick="doUndo(\''+h(f.Id)+'\',this)">&#8635; Undo</button><span style="font-size:11px;color:var(--tx2);align-self:center">Fixed at '+h(f._FixedAt)+'</span></div>';
   }
   return '<div class="finding">'+
     '<div class="finding-hdr"><span class="badge '+h(f.Severity)+'">'+h(f.Severity)+'</span>'+
-    '<span class="finding-title">'+h(f.CheckName)+'</span>'+recTag+'</div>'+
+    '<span class="finding-title">'+h(f.CheckName)+'</span>'+recTag+fixBadge+'</div>'+
     '<div class="finding-meta">'+
     '<div>Observed: <span>'+h(f.Observed)+'</span></div>'+
     '<div>Expected: <span>'+h(f.Expected)+'</span></div>'+
@@ -417,6 +458,7 @@ function findingCard(f){
     (f.Note?'<div>Note: <span>'+h(f.Note)+'</span></div>':'')+
     '</div>'+
     (f.Fix&&f.Fix!=='N/A'?'<div class="fix-cmd">'+h(f.Fix)+'</div>':'')+
+    (f._ImpactWarning?'<div class="impact-warn">&#9888; '+h(f._ImpactWarning)+'</div>':'')+
     compBadges(f)+
     actions+
   '</div>';
@@ -449,6 +491,17 @@ function render(){
   // Sort categories by worst severity among their findings
   const sortedCats=Object.keys(groups).sort((a,b)=>worstSev(groups[a])-worstSev(groups[b]));
   let html='';
+  // Peripheral detection banner
+  if(D.peripherals&&D.peripherals.Printers&&D.peripherals.Printers.length>0){
+    const pCount=D.peripherals.Printers.length;
+    const sfCount=(D.peripherals.SharedFolders&&D.peripherals.SharedFolders.length)||0;
+    const warnCount=(D.findings||[]).filter(f=>f._ImpactWarning&&f.Vulnerable).length;
+    if(warnCount>0){
+      html+='<div style="margin-bottom:10px;padding:8px 14px;background:#3d2200;border:1px solid #7a4400;border-radius:6px;font-size:12px;color:var(--ora)">'+
+        '&#9888; Detected: '+pCount+' printer'+(pCount===1?'':'s')+(sfCount?' | '+sfCount+' shared folder'+(sfCount===1?'':'s'):'')+
+        ' -- '+warnCount+' fix'+(warnCount===1?' carries':'es carry')+' a compatibility warning (shown on each affected fix)</div>';
+    }
+  }
   for(const cat of sortedCats){
     const fs=groups[cat];
     const hasVuln=fs.some(f=>f.Vulnerable);
@@ -470,7 +523,7 @@ async function poll(){
     if(!r.ok)throw new Error('HTTP '+r.status);
     const d=await r.json();
     const changed=JSON.stringify(d)!==JSON.stringify(D);
-    D=d;
+    D=d; pollFails=0;
     document.getElementById('dot').className='dot';
     document.getElementById('scantime').textContent='Last scan: '+(D.context&&D.context.TimestampUTC||'');
     renderScores(D.scores||{SeverityScore:0,HygieneScore:0});
@@ -478,7 +531,13 @@ async function poll(){
     renderQuickActions();
     if(changed) render();
   }catch(e){
+    pollFails++;
     document.getElementById('dot').className='dot err';
+    // Backoff: after 5 failures slow to 10s to avoid console spam when server stops
+    if(pollFails===5){
+      clearInterval(pollTimer);
+      pollTimer=setInterval(poll,10000);
+    }
   }
 }
 
@@ -506,8 +565,8 @@ function showModal(html, onConfirm){
   const bg=document.getElementById('modal-bg');
   bg.innerHTML='<div class="modal">'+html+'</div>';
   bg.style.display='flex';
-  bg.onclick=e=>{ if(e.target===bg) bg.style.display='none'; };
-  window._modalConfirm=async(val)=>{ bg.style.display='none'; await onConfirm(val); };
+  bg.onclick=e=>{ if(e.target===bg){ bg.style.display='none'; window._modalConfirm=null; } };
+  window._modalConfirm=async(val)=>{ bg.style.display='none'; window._modalConfirm=null; await onConfirm(val); };
 }
 
 async function doFix(id, tier, btn){
@@ -527,21 +586,40 @@ async function doFix(id, tier, btn){
       '<input id="risky-confirm" placeholder="'+id+'" autocomplete="off" spellcheck="false" style="text-transform:uppercase">'+
       '<div class="modal-btns"><button class="btn btn-undo" onclick="document.getElementById(\'modal-bg\').style.display=\'none\'">Cancel</button>'+
       '<button class="btn btn-risk" onclick="_modalConfirm(document.getElementById(\'risky-confirm\').value)">Apply</button></div>',
-      async(val)=>{ if(val.toUpperCase()===id.toUpperCase()) await applyFix(id,true,btn); else toast('ID mismatch — fix not applied.',false); }
+      async(val)=>{ if(val.toUpperCase()===id.toUpperCase()) await applyFix(id,true,btn); else toast('ID mismatch -- fix not applied.',false); }
     );
   }
 }
 
+// IDs whose fixes require a reboot to take full effect
+const NEEDS_REBOOT=new Set(['VBS','HVCI','CG','PPL','SMB1','BLENC','BLPBA']);
+
+async function doRescanVerify(){
+  document.getElementById('btn-rescan').disabled=true;
+  try{
+    const r=await fetch(BASE+'/api/rescan',{method:'POST'});
+    const d=await r.json();
+    await poll();
+    if(d.success) toast('Verified: '+d.vulnCount+' vulnerabilit'+(d.vulnCount===1?'y':'ies')+' remaining',true);
+  }catch(e){ /* silent -- rescan failure doesn't block the user */ }
+  document.getElementById('btn-rescan').disabled=false;
+}
+
 async function applyFix(id, confirmed, btn){
   if(btn) btn.disabled=true;
+  const fBefore=(D&&D.findings||[]).find(f=>f.Id===id);
+  const needsReboot=NEEDS_REBOOT.has(id)||(fBefore&&fBefore._Tier==='RISKY');
   try{
     const r=await fetch(BASE+'/api/fix/'+encodeURIComponent(id),{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({confirm:confirmed})
     });
     const d=await r.json();
-    if(d.success){ toast(id+' fixed successfully'); await poll(); }
-    else toast('Fix failed: '+(d.error||'unknown error'),false);
+    if(d.success){
+      if(needsReboot) toast(id+' applied -- REBOOT REQUIRED to take full effect.',true);
+      else toast(id+' applied -- verifying...',true);
+      await doRescanVerify();
+    } else toast('Fix failed: '+(d.error||'unknown error'),false);
   }catch(e){ toast('Error: '+e.message,false); if(btn) btn.disabled=false; }
 }
 
@@ -550,17 +628,36 @@ async function doUndo(id, btn){
   try{
     const r=await fetch(BASE+'/api/undo/'+encodeURIComponent(id),{method:'POST'});
     const d=await r.json();
-    if(d.success){ toast(id+' undone'); await poll(); }
+    if(d.success){ toast(id+' undone -- verifying...',true); await doRescanVerify(); }
     else toast('Undo failed: '+(d.error||'unknown error'),false);
   }catch(e){ toast('Error: '+e.message,false); if(btn) btn.disabled=false; }
+}
+
+async function doLaunch(id){
+  try{
+    const r=await fetch(BASE+'/api/launch/'+encodeURIComponent(id),{method:'POST'});
+    const d=await r.json();
+    if(d.success) toast('Settings panel opened.',true);
+    else toast('Could not open: '+(d.error||'unknown'),false);
+  }catch(e){toast('Error: '+e.message,false);}
+}
+
+function toggleGuide(gid){
+  const el=document.getElementById(gid);
+  const btn=document.getElementById('gt-'+gid);
+  if(!el) return;
+  const vis=el.style.display!=='none';
+  el.style.display=vis?'none':'block';
+  if(btn) btn.innerHTML=(vis?'&#9660;':'&#9650;')+' Step-by-step guide';
 }
 
 function renderQuickActions(){
   const qa=document.getElementById('quick-actions');
   if(!qa||!D) return;
   const findings=D.findings||[];
-  const safeFixes=findings.filter(f=>f.Vulnerable&&f.Fix&&f.Fix!=='N/A'&&(f._Tier||'CAUTION')==='SAFE');
-  const recFixes=findings.filter(f=>f.Vulnerable&&f.Fix&&f.Fix!=='N/A'&&f.Recommendation==='Recommended'&&(f._Tier==='SAFE'||f._Tier==='CAUTION'));
+  const autoFix=f=>f._FixType!=='Manual'&&f._FixType!=='None';
+  const safeFixes=findings.filter(f=>f.Vulnerable&&f.Fix&&f.Fix!=='N/A'&&autoFix(f)&&(f._Tier||'CAUTION')==='SAFE');
+  const recFixes=findings.filter(f=>f.Vulnerable&&f.Fix&&f.Fix!=='N/A'&&autoFix(f)&&f.Recommendation==='Recommended'&&(f._Tier==='SAFE'||f._Tier==='CAUTION'));
   qa.innerHTML=
     (safeFixes.length?'<button class="qa-btn qa-safe" onclick="doBatchFix(\'safe\')">&#9654; Apply All Safe ('+safeFixes.length+')</button>':'')+
     (recFixes.length?'<button class="qa-btn qa-caut" onclick="doBatchFix(\'recommended\')">&#9654; Apply Recommended ('+recFixes.length+')</button>':'');
@@ -579,9 +676,12 @@ async function doBatchFix(mode){
   try{
     const r=await fetch(BASE+'/api/batch-fix',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode})});
     const d=await r.json();
-    if(d.success) toast('Batch done: '+d.applied+' applied'+(d.failed?' — '+d.failed+' failed':''),d.failed===0);
-    else toast('Batch failed: '+(d.error||'unknown'),false);
-    await poll();
+    if(d.success){
+      let msg='Applied: '+d.applied+(d.failed?' | Failed: '+d.failed:'')+' -- verifying...';
+      if(d.failed&&d.logFile) msg+=' Log: '+d.logFile;
+      toast(msg,d.failed===0);
+      await doRescanVerify();
+    } else toast('Batch failed: '+(d.error||'unknown'),false);
   }catch(e){toast('Error: '+e.message,false);}
 }
 
@@ -615,7 +715,11 @@ function Invoke-WebBatchFix {
     $applied = 0; $failed = 0; $skipped = 0
     $errors  = [System.Collections.Generic.List[string]]::new()
 
-    $vulns = @($Findings | Where-Object { $_.Vulnerable -and $_.Fix -and $_.Fix -ne 'N/A' })
+    $vulns = @($Findings | Where-Object {
+        $_.Vulnerable -and $_.Fix -and $_.Fix -ne 'N/A' -and
+        -not ($_.Fix.TrimEnd() -match '\.$') -and
+        -not ($_.Fix -match '<[A-Za-z_][^>]+>')
+    })
     $targets = switch ($Mode) {
         'safe' {
             @($vulns | Where-Object {
@@ -648,7 +752,7 @@ function Invoke-WebBatchFix {
     foreach ($f in $targets) {
         try {
             if ($backDir) { Backup-FindingState -Finding $f -BackupDir $backDir | Out-Null }
-            Invoke-Expression $f.Fix | Out-Null
+            $null = Invoke-FindingFix -Expression $f.Fix -FindingId $f.Id
             $f | Add-Member -NotePropertyName '_OrigSeverity' -NotePropertyValue $f.Severity -Force
             $f.Vulnerable = $false
             $f.Severity   = 'PASS'
@@ -661,20 +765,22 @@ function Invoke-WebBatchFix {
         }
     }
 
-    Send-JsonResponse $Response @{
+    $resp = @{
         success = $true
         applied = $applied
         failed  = $failed
         skipped = $skipped
         errors  = @($errors)
     }
+    if ($failed -gt 0 -and $Script:LogFile) { $resp.logFile = $Script:LogFile }
+    Send-JsonResponse $Response $resp
 }
 
 function Start-AuditWebUI {
     <#
     .SYNOPSIS
         Starts the localhost-only HttpListener web dashboard.
-        Blocking call — exits when user closes the server or hits Ctrl+C.
+        Blocking call -- exits when user closes the server or hits Ctrl+C.
     #>
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost','')]
     param(
@@ -693,7 +799,7 @@ function Start-AuditWebUI {
     $listener = $null
     try {
         $listener = New-Object System.Net.HttpListener
-        $listener.Prefixes.Add("$baseUrl/")   # ONLY localhost — never + or *
+        $listener.Prefixes.Add("$baseUrl/")   # ONLY localhost -- never + or *
         $listener.Start()
     } catch {
         Write-Warning "APEX WebUI: Could not start HTTP listener on port $port -- $_"
@@ -720,13 +826,24 @@ function Start-AuditWebUI {
             $path = $req.Url.LocalPath.TrimEnd('/')
             $meth = $req.HttpMethod.ToUpper()
 
+            # CSRF protection: reject POST requests from foreign origins
+            if ($meth -eq 'POST') {
+                $origin = $req.Headers['Origin']
+                if ($origin -and $origin -ne $baseUrl) {
+                    Send-JsonResponse $resp @{ error='Origin mismatch' } 403
+                    continue
+                }
+            }
+
             # Read request body for POST endpoints
             $body = $null
             if ($meth -eq 'POST' -and $req.HasEntityBody) {
+                $sr = $null
                 try {
                     $sr   = New-Object System.IO.StreamReader($req.InputStream, $req.ContentEncoding)
                     $body = $sr.ReadToEnd() | ConvertFrom-Json
                 } catch { $body = $null }
+                finally { if ($sr) { try { $sr.Dispose() } catch { } } }
             }
 
             switch -Regex ($path) {
@@ -765,6 +882,20 @@ function Start-AuditWebUI {
                     Invoke-WebBatchFix -Response $resp -Mode $bMode -Findings $Findings `
                         -SafetyTiers $SafetyTiers -BackupBaseDir $BackupBaseDir
                 }
+                '^/api/launch/(.+)$' {
+                    $fid = [System.Uri]::UnescapeDataString($Matches[1])
+                    $fLaunch = $Findings | Where-Object { $_.Id -eq $fid } | Select-Object -First 1
+                    if ($fLaunch -and $fLaunch.PSObject.Properties['_Shortcut'] -and $fLaunch._Shortcut -and $fLaunch._Shortcut.Cmd) {
+                        try {
+                            Invoke-Expression $fLaunch._Shortcut.Cmd | Out-Null
+                            Send-JsonResponse $resp @{ success=$true }
+                        } catch {
+                            Send-JsonResponse $resp @{ success=$false; error=$_.Exception.Message } 500
+                        }
+                    } else {
+                        Send-JsonResponse $resp @{ success=$false; error='No shortcut for this finding' } 404
+                    }
+                }
                 '^/api/shutdown$' {
                     Send-JsonResponse $resp @{ success=$true; message='Server stopping' }
                     $listener.Stop()
@@ -776,11 +907,12 @@ function Start-AuditWebUI {
             }
         }
     } catch [System.Net.HttpListenerException] {
-        # Listener stopped (Ctrl+C or /api/shutdown) — normal exit
+        # Listener stopped (Ctrl+C or /api/shutdown) -- normal exit
     } catch {
         Write-Warning "APEX WebUI error: $($_.Exception.Message)"
     } finally {
         try { $listener.Close() } catch { }
+        Remove-LogFile   # ephemeral log -- deleted on clean exit
         Write-Host ''
         Write-Host '  [*] APEX Web Dashboard stopped.' -ForegroundColor DarkCyan
     }

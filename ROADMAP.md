@@ -519,4 +519,76 @@ These are things APEX will deliberately never do:
 
 ---
 
-*Last updated: 2026-03-30 — v3.0.0 (compliance mapping, guided remediation, 4 new check domains)*
+---
+
+## v4.9 — Bug Fix, Security Hardening, and Optimization (2026-04-02)
+
+### Bugs fixed in this release
+
+| ID | File | Severity | Description |
+|----|------|----------|-------------|
+| B-1 | Engine\Core.ps1 | HIGH | `Invoke-Exe` potential deadlock: `ReadToEnd()` before `WaitForExit()`, stderr not drained, process handle never disposed |
+| B-2 | Engine\CompatScan.ps1 | HIGH | Duplicate `switch -Regex` branches for SMB1/NTLM/LLMNR/NETBIOS caused `_ImpactWarning` to become an array when both printers AND mapped drives were present |
+| B-3 | Engine\Core.ps1 + Remediate.ps1 + WebUI.ps1 | HIGH | `$LASTEXITCODE` not set by PowerShell cmdlets — failed cmdlet fixes silently reported as successful. Fixed by extracting `Invoke-FindingFix` helper with `$ErrorActionPreference = 'Stop'` |
+| B-4 | Windows_Audit.ps1 | HIGH | `$baseline = $null` at line 284 overwrote the `-Baseline` parameter (PowerShell is case-insensitive) — any use of `-Baseline` to save a snapshot was silently broken. Renamed to `$baselineData` |
+| B-5 | Windows_Audit.ps1 | MEDIUM | Guided post-scan baseline save: the `-Baseline` path collected from the wizard was set AFTER the baseline-copy block had already executed. Block moved to after guided post-scan |
+| B-6 | Engine\CompatScan.ps1 | MEDIUM | All guide step text was in Italian while the rest of the codebase is English. Translated to English |
+| B-7 | Engine\WebUI.ps1 | MEDIUM | `StreamReader` in POST body handler never disposed — handle leak on long-running WebUI sessions |
+| B-8 | Checks\Check-Forensics.ps1 | MEDIUM | `wevtutil gl Security` output parsed with English-only `maxSize:` label — false positive on Italian/German/French Windows. Switched to `/f:xml` for locale-independent parsing |
+| B-9 | Checks\Check-LocalAdmins.ps1 | MEDIUM | `net.exe localgroup Administrators` fallback used hardcoded English group name and English "The command completed" exit marker — both fail on non-English Windows. Resolved group by SID S-1-5-32-544 |
+
+### Security hardening in this release
+
+| ID | File | Description |
+|----|------|-------------|
+| S-1 | Engine\WebUI.ps1 | Added CSRF origin check: POST requests from foreign origins rejected with 403 |
+| S-2 | Engine\WebUI.ps1 JS | `h()` escape function now also escapes single quotes (`'` → `&#39;`) closing onclick injection gap |
+| S-3 | Engine\WebUI.ps1 | Added `X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY` security headers to all responses |
+
+### Optimizations in this release
+
+- **Engine\CompatScan.ps1**: Printer list uses `List<T>.Add()` instead of `$list +=` (O(n) vs O(n²))
+- **Checks\Check-LocalAdmins.ps1**: Member list uses `List<T>.Add()` in net.exe fallback path
+- **Checks\Check-SMB.ps1**: `Get-SmbServerConfiguration` called once, cached in `$srvCfg`, reused for SMBv1/signing/encryption checks (3 cmdlet calls → 1)
+- **WebUI.ps1 JS**: Poll backs off to 10s interval after 5 consecutive server failures
+- **WebUI.ps1 JS**: Search input debounced (200ms) — was triggering full DOM rebuild on every keystroke
+- **WebUI.ps1 JS**: `window._modalConfirm` cleared when modal closes — prevents stale closure leak
+
+### New guide entries added
+
+- `SCHTASK-WRITABLE` — step-by-step guide to fix executable ACLs via icacls
+- `SCHTASK-SYSTEM` — guide to audit SYSTEM-level scheduled tasks
+- `UNQUOTED_SERVICE_PATH` — guide to quote service binary paths via sc.exe
+
+### Candidate improvements identified by code audit (not yet implemented)
+
+See items F-1 through F-18 in the checks table and P-1 through P-6 in the features table below.
+
+| # | Type | Description |
+|---|------|-------------|
+| F-1 | Check | Password policy: minimum length, lockout, complexity via `net accounts` / `secedit` |
+| F-2 | Check | Defender signature freshness (`AntivirusSignatureAge > 7 days`) |
+| F-3 | Check | Tamper Protection status (`IsTamperProtected`) |
+| F-4 | Check | Pending Windows updates / days since last security patch |
+| F-5 | Check | AutoRun/AutoPlay registry policy |
+| F-6 | Check | WinRM remote management exposure |
+| F-7 | Check | Guest account enabled status |
+| F-8 | Check | Screen lock / screensaver timeout policy |
+| F-9 | Check | DNS over HTTPS (DoH) configuration |
+| F-10 | Check | PowerShell transcription logging enabled |
+| F-11 | Check | CredSSP delegation configuration |
+| F-12 | Check | Network profile assignment (Public vs Private) |
+| F-13 | Check | USB storage restrictions (`USBSTOR\Start`) |
+| F-14 | Check | Weak TLS/Schannel configuration (TLS 1.0/1.1, RC4) |
+| F-15 | Check | Local security policy user-rights audit via `secedit` |
+| F-16 | Check | AppLocker/WDAC detailed rule enumeration |
+| F-17 | Check | Vulnerable/outdated software inventory |
+| F-18 | Check | Hyper-V / Windows Sandbox status |
+| P-1 | Feature | CSV export for SIEM ingestion |
+| P-2 | Feature | PDF report for formal delivery |
+| P-3 | Feature | Remote scan via WinRM/CIM sessions |
+| P-4 | Feature | Scheduled scan via Task Scheduler |
+| P-5 | Feature | Differential alerts (email/webhook on regression vs baseline) |
+| P-6 | Feature | Finding suppression with justification |
+
+*Last updated: 2026-04-02 — v4.9.0 (bug fixes, security hardening, optimizations)*

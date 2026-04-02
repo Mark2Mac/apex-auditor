@@ -93,6 +93,7 @@ function Get-SvcStatus {
 
 function Invoke-Exe {
     param([string]$Exe, [string[]]$ExeArgs)
+    $p = $null
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $Exe; $psi.Arguments = $ExeArgs -join ' '
@@ -101,9 +102,11 @@ function Invoke-Exe {
         $p = New-Object System.Diagnostics.Process
         $p.StartInfo = $psi; $p.Start() | Out-Null
         $out = $p.StandardOutput.ReadToEnd()
+        $null = $p.StandardError.ReadToEnd()   # drain stderr to prevent deadlock
         $p.WaitForExit(8000) | Out-Null
         return $out
     } catch { return '' }
+    finally { if ($p) { try { $p.Dispose() } catch { } } }
 }
 
 function Get-Cim {
@@ -305,5 +308,60 @@ function Get-ComplianceRefs {
             }
             $f | Add-Member -NotePropertyName 'ComplianceRefs' -NotePropertyValue $crefs -Force
         }
+    }
+}
+
+# ---------------------------------------------------------------------------
+#  EPHEMERAL LOGGING
+#  Log lives in $env:TEMP and is deleted on clean exit (Remove-LogFile).
+#  If the process crashes, OS temp cleanup handles eventual removal.
+# ---------------------------------------------------------------------------
+$Script:LogFile = $null
+
+function Write-Log {
+    param(
+        [Parameter(Mandatory)][string] $Message,
+        [ValidateSet('INFO','WARN','ERROR','DEBUG')][string] $Level = 'INFO'
+    )
+    if (-not $Script:LogFile) { return }
+    $ts   = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    $line = "$ts [$Level] $Message"
+    try { Add-Content -Path $Script:LogFile -Value $line -Encoding UTF8 } catch { }
+}
+
+function Remove-LogFile {
+    if ($Script:LogFile -and (Test-Path $Script:LogFile -ErrorAction SilentlyContinue)) {
+        try { Remove-Item $Script:LogFile -Force -ErrorAction SilentlyContinue } catch { }
+        $Script:LogFile = $null
+    }
+}
+
+function Invoke-FindingFix {
+    <#
+    .SYNOPSIS
+        Executes a fix expression with reliable error detection for both PS cmdlets
+        and native executables, logs the result, and rethrows on failure.
+    .OUTPUTS
+        Hashtable @{ Success=$true; Output=[string] } on success. Throws on failure.
+    #>
+    param(
+        [Parameter(Mandatory)][string] $Expression,
+        [Parameter(Mandatory)][string] $FindingId
+    )
+    $prevEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Stop'   # turns cmdlet non-terminating errors into terminating
+        $global:LASTEXITCODE = 0
+        $fixOut = Invoke-Expression $Expression 2>&1 | Out-String
+        if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+            throw "Command exited with code $LASTEXITCODE. Output: $fixOut"
+        }
+        Write-Log "FIX OK  [$FindingId] exit=$LASTEXITCODE output=$($fixOut.Trim())"
+        return @{ Success=$true; Output=$fixOut }
+    } catch {
+        Write-Log "FIX FAIL [$FindingId] error=$_" -Level ERROR
+        throw
+    } finally {
+        $ErrorActionPreference = $prevEAP
     }
 }

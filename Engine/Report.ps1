@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # =============================================================================
 #  APEX Audit Engine -- Report.ps1
 #  TUI console report, self-contained HTML report, export-path resolution.
@@ -102,6 +102,7 @@ body{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSyst
 .fn{font-weight:500;font-size:13px}.fhum{color:var(--tx2);font-size:12px;margin-top:3px;line-height:1.45}
 .ffix{margin-top:6px;font-size:11px;background:var(--bg3);border-left:3px solid var(--cya);padding:4px 9px;border-radius:0 4px 4px 0;color:var(--tx2)}
 .ffix code{color:var(--cya);font-family:"SFMono-Regular",Consolas,monospace;font-size:10px}
+.fwarn{margin-top:5px;font-size:11px;background:#2d1800;border-left:3px solid var(--ora);padding:4px 9px;border-radius:0 4px 4px 0;color:var(--ora)}
 .trow{display:grid;grid-template-columns:90px 1fr;gap:6px;font-size:11px;margin-top:4px}.trow+.trow{margin-top:2px}
 .tl{color:var(--tx2);font-weight:600;font-size:10px;text-transform:uppercase;padding-top:1px}.tv{color:var(--tx);word-break:break-word}
 .cf{font-size:10px;margin-left:auto;flex-shrink:0;padding:1px 5px;border-radius:3px}
@@ -126,7 +127,7 @@ body{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSyst
 const D=__APEX_DATA__;
 const F=D.findings,C=D.context,S=D.scores,DT=D.delta;
 const SEV_LABEL={CRITICAL:'C',HIGH:'H',MEDIUM:'M',LOW:'L',PASS:'P'};
-const SEV_HUMAN={CRITICAL:'Immediate action required — critical security gap.',HIGH:'Should be addressed soon — significant risk.',MEDIUM:'Plan to address — moderate risk.',LOW:'Best-practice recommendation — low exploitability.',PASS:'Control verified and effective.'};
+const SEV_HUMAN={CRITICAL:'Immediate action required -- critical security gap.',HIGH:'Should be addressed soon -- significant risk.',MEDIUM:'Plan to address -- moderate risk.',LOW:'Best-practice recommendation -- low exploitability.',PASS:'Control verified and effective.'};
 function h(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function sv(s){const k=SEV_LABEL[s]||'P';return`<span class="sv sv-${k}">${h(s)}</span>`}
 function cf(c){return`<span class="cf cf-${h(c)}">${h(c)}</span>`}
@@ -165,8 +166,9 @@ function summaryBar(){
 function findingCard(f,techMode){
   const dispSev=f.Vulnerable?f.Severity:'PASS';
   const fix=f.Fix&&f.Fix!=='N/A'?`<div class="ffix">Fix: <code>${h(f.Fix)}</code></div>`:'';
-  if(!techMode)return`<div class="fi"><div class="fih">${sv(dispSev)}<div class="fn">${h(f.CheckName)}</div></div><div class="fhum">${h(SEV_HUMAN[f.Severity]||'')}${f.Note?' '+h(f.Note):''}</div>${fix}</div>`;
-  return`<div class="fi"><div class="fih">${sv(dispSev)}<div class="fn">${h(f.CheckName)}</div>${cf(f.Confidence)}</div><div class="trow"><span class="tl">Observed</span><span class="tv">${h(f.Observed)}</span></div><div class="trow"><span class="tl">Expected</span><span class="tv">${h(f.Expected)}</span></div><div class="trow"><span class="tl">Source</span><span class="tv">${h(f.Source)}</span></div><div class="trow"><span class="tl">ID</span><span class="tv" style="font-family:monospace;font-size:11px">${h(f.Id)}</span></div>${compBadges(f)}${fix}</div>`
+  const warn=f._ImpactWarning?`<div class="fwarn">&#9888; ${h(f._ImpactWarning)}</div>`:'';
+  if(!techMode)return`<div class="fi"><div class="fih">${sv(dispSev)}<div class="fn">${h(f.CheckName)}</div></div><div class="fhum">${h(SEV_HUMAN[f.Severity]||'')}${f.Note?' '+h(f.Note):''}</div>${fix}${warn}</div>`;
+  return`<div class="fi"><div class="fih">${sv(dispSev)}<div class="fn">${h(f.CheckName)}</div>${cf(f.Confidence)}</div><div class="trow"><span class="tl">Observed</span><span class="tv">${h(f.Observed)}</span></div><div class="trow"><span class="tl">Expected</span><span class="tv">${h(f.Expected)}</span></div><div class="trow"><span class="tl">Source</span><span class="tv">${h(f.Source)}</span></div><div class="trow"><span class="tl">ID</span><span class="tv" style="font-family:monospace;font-size:11px">${h(f.Id)}</span></div>${compBadges(f)}${fix}${warn}</div>`
 }
 function section(title,items,open,tech){
   const body=items.length?items.map(f=>findingCard(f,tech)).join(''):`<div class="empty">No findings in this group.</div>`;

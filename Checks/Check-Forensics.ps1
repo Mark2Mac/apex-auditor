@@ -33,9 +33,12 @@ function Invoke-CheckForensics {
             -Note 'Security event log query requires administrator elevation.'
     } else {
         try {
-            $logOut  = Invoke-Exe 'wevtutil.exe' @('gl','Security')
+            $logOut  = Invoke-Exe 'wevtutil.exe' @('gl','Security','/f:xml')
             $maxSize = 0
-            if ($logOut -match 'maxSize:\s*(\d+)') { $maxSize = [long]$Matches[1] }
+            try {
+                $xml = [xml]$logOut
+                $maxSize = [long]$xml.channel.logging.maxSize
+            } catch { }
             $logV   = $maxSize -lt 268435456
             $logSev = if ($logV) { 'LOW' } else { 'PASS' }
             Add-Finding -Id 'SECLOG' -Category 'Forensics' -CheckName 'Security Log Max Size' `
