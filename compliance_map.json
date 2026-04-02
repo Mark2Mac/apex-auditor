@@ -60,7 +60,28 @@
     "cis_level": 1,
     "stig": ["V-253400"],
     "nist": ["3.14.1"],
-    "title": "Windows Update Service Running"
+    "title": "Windows Update Service Not Disabled"
+  },
+  "WU-SRC": {
+    "cis": [],
+    "cis_level": 1,
+    "stig": [],
+    "nist": ["3.14.1"],
+    "title": "Windows Update Source Trust (anti-WSUS hijack)"
+  },
+  "WU-SIGN": {
+    "cis": [],
+    "cis_level": 1,
+    "stig": [],
+    "nist": ["3.4.8"],
+    "title": "Windows Update Binary Authenticode Integrity"
+  },
+  "WU-STALE": {
+    "cis": [],
+    "cis_level": 1,
+    "stig": ["V-253400"],
+    "nist": ["3.14.1"],
+    "title": "Windows Update Freshness (<=90 days)"
   },
   "VBS": {
     "cis": ["18.9.44.2"],

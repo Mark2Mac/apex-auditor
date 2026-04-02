@@ -134,11 +134,108 @@ function Invoke-CheckBaseline {
             -Observed 'DefenderUnavailable' -Expected '1 (Enabled)' -Source 'Get-MpPreference'
     }
 
-    # Windows Update
-    $wuStat = Get-SvcStatus 'wuauserv'
-    Add-Finding -Id 'WU' -Category 'Baseline' -CheckName 'Windows Update Mechanism' `
-        -Severity 'LOW' -Vulnerable ($wuStat -ne 'Running') -Confidence 'Medium' `
-        -Observed "wuauserv=$wuStat" -Expected 'Running' -Source 'Service' `
-        -Fix 'Set-Service wuauserv -StartupType Automatic; Start-Service wuauserv' `
-        -Note 'Offline check only.'
+    # Windows Update — 4 sub-checks: service health, source trust, binary integrity, freshness
+
+    # WU — Service not disabled (demand-start Manual is the correct Windows default)
+    $wuSvc     = $null
+    try { $wuSvc = Get-Service 'wuauserv' -ErrorAction SilentlyContinue } catch {}
+    $wuStart   = if ($wuSvc) { $wuSvc.StartType.ToString() } else { 'Unknown' }
+    $wuStatus  = if ($wuSvc) { $wuSvc.Status.ToString() }    else { 'Unknown' }
+    $wuDisabled = $wuStart -eq 'Disabled'
+    Add-Finding -Id 'WU' -Category 'Baseline' -CheckName 'Windows Update Service' `
+        -Severity 'MEDIUM' -Vulnerable $wuDisabled -Confidence 'High' `
+        -Observed "wuauserv StartType=$wuStart Status=$wuStatus" -Expected 'StartType!=Disabled' `
+        -Source 'Service' `
+        -Fix 'Set-Service wuauserv -StartupType Manual' `
+        -Note 'wuauserv is demand-start by design; Stopped+Manual is healthy. Disabled blocks all updates.'
+
+    # WU-SRC — Update source trust (WSUS hijack detection)
+    $wuKey      = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+    $auKey      = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+    $useWU      = Get-RegValue -Path $auKey  -Name 'UseWUServer'  -Default 0
+    $wuServer   = Get-RegValue -Path $wuKey  -Name 'WUServer'     -Default ''
+    if ($useWU -eq 1 -and $wuServer) {
+        $isHttps   = $wuServer -match '^https://'
+        $wuSrcVuln = -not $isHttps
+        $wuSrcSev  = if ($wuSrcVuln) { 'HIGH' } else { 'PASS' }
+        $wuSrcNote = if ($wuSrcVuln) {
+            'HTTP WSUS is susceptible to WSUS poisoning (CVE-2020-1013). Attackers on the network can inject malicious updates.'
+        } else {
+            'WSUS configured with HTTPS — source is encrypted in transit.'
+        }
+        Add-Finding -Id 'WU-SRC' -Category 'Baseline' -CheckName 'Windows Update Source Trust' `
+            -Severity $wuSrcSev -Vulnerable $wuSrcVuln -Confidence 'High' `
+            -Observed "UseWUServer=1 WUServer=$wuServer" -Expected 'HTTPS WSUS endpoint' `
+            -Source 'Registry' `
+            -Fix 'Enforce HTTPS on WSUS: configure SSL on the WSUS server and update WUServer/WUStatusServer policies to https://.' `
+            -Note $wuSrcNote
+    } else {
+        Add-Finding -Id 'WU-SRC' -Category 'Baseline' -CheckName 'Windows Update Source Trust' `
+            -Severity 'PASS' -Vulnerable $false -Confidence 'High' `
+            -Observed 'UseWUServer=0 (direct Microsoft Update)' -Expected 'Direct or HTTPS WSUS' `
+            -Source 'Registry' `
+            -Note 'Updates sourced directly from Microsoft Update — no WSUS redirection.'
+    }
+
+    # WU-SIGN — Authenticode integrity of core WU binaries
+    $wuBinaries   = @(
+        [IO.Path]::Combine($env:SystemRoot, 'System32', 'wuaueng.dll'),
+        [IO.Path]::Combine($env:SystemRoot, 'System32', 'wuapi.dll'),
+        [IO.Path]::Combine($env:SystemRoot, 'System32', 'wuauclt.exe')
+    )
+    $wuSignFailed = [System.Collections.Generic.List[string]]::new()
+    $wuSignObs    = [System.Collections.Generic.List[string]]::new()
+    foreach ($bin in $wuBinaries) {
+        $leaf = [IO.Path]::GetFileName($bin)
+        if (-not (Test-Path $bin)) {
+            $wuSignFailed.Add($leaf)
+            $wuSignObs.Add("$leaf=NotFound")
+            continue
+        }
+        try {
+            $sig = Get-AuthenticodeSignature -FilePath $bin -ErrorAction Stop
+            $ok  = ($sig.Status -eq 'Valid') -and ($sig.SignerCertificate.Subject -match 'Microsoft')
+            $wuSignObs.Add("$leaf=$($sig.Status)")
+            if (-not $ok) { $wuSignFailed.Add("$leaf(Status=$($sig.Status))") }
+        } catch {
+            $wuSignFailed.Add("$leaf(QueryFailed)")
+            $wuSignObs.Add("$leaf=QueryFailed")
+        }
+    }
+    $wuSignVuln = $wuSignFailed.Count -gt 0
+    $wuSignSev  = if ($wuSignVuln) { 'CRITICAL' } else { 'PASS' }
+    Add-Finding -Id 'WU-SIGN' -Category 'Baseline' -CheckName 'Windows Update Binary Integrity' `
+        -Severity $wuSignSev -Vulnerable $wuSignVuln -Confidence 'High' `
+        -Observed ($wuSignObs -join ' ') `
+        -Expected 'All Valid + Microsoft signer' -Source 'Authenticode' `
+        -Fix 'Run: sfc /scannow  then  DISM /Online /Cleanup-Image /RestoreHealth  to restore tampered system binaries.' `
+        -Note 'Verifies Authenticode signature of wuaueng.dll, wuapi.dll, wuauclt.exe against Microsoft root CA.'
+
+    # WU-STALE — Update freshness (>90 days without an installed hotfix = flag)
+    $wuStaleVuln = $false
+    $wuStaleObs  = 'Unknown'
+    $wuStaleConf = 'Medium'
+    try {
+        $lastHf = Get-HotFix -ErrorAction Stop |
+                  Where-Object { $_.InstalledOn } |
+                  Sort-Object InstalledOn -Descending |
+                  Select-Object -First 1
+        if ($lastHf -and $lastHf.InstalledOn) {
+            $daysSince   = ([datetime]::Today - [datetime]$lastHf.InstalledOn).Days
+            $wuStaleVuln = $daysSince -gt 90
+            $wuStaleObs  = "LastHotfix=$($lastHf.HotFixID) InstalledOn=$($lastHf.InstalledOn.ToString('yyyy-MM-dd')) DaysAgo=$daysSince"
+        } else {
+            $wuStaleObs  = 'NoHotfixFound'
+            $wuStaleVuln = $true
+            $wuStaleConf = 'Low'
+        }
+    } catch {
+        $wuStaleObs  = "QueryFailed: $($_.Exception.Message)"
+        $wuStaleConf = 'QueryFailed'
+    }
+    Add-Finding -Id 'WU-STALE' -Category 'Baseline' -CheckName 'Windows Update Freshness' `
+        -Severity 'MEDIUM' -Vulnerable $wuStaleVuln -Confidence $wuStaleConf `
+        -Observed $wuStaleObs -Expected 'Hotfix installed within 90 days' -Source 'Get-HotFix' `
+        -Fix 'Run Windows Update to install pending patches, or investigate blocking Group Policy.' `
+        -Note 'Get-HotFix covers cumulative/security updates. Gap >90 days may indicate WU is blocked or broken.'
 }

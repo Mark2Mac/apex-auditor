@@ -137,6 +137,7 @@ function Backup-FindingState {
         $svcName = switch ($id) {
             'SPOOLER-SVC' { 'Spooler' }
             'FW-SVC'      { 'MpsSvc' }
+            'WU'          { 'wuauserv' }
             default       { $null }
         }
         if ($svcName) {
