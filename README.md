@@ -2,18 +2,21 @@
 
 > **Offline, standalone Windows security auditor and guided hardening tool — written in PowerShell. No internet connection, no cloud, no external agents.**
 
-**v3.0** — 21 check domains · 57+ finding IDs · CIS / DISA STIG / NIST 800-171r2 compliance mapping · interactive remediation with backup and undo
+**v4.9.1** — 21 check domains · 60+ finding IDs · CIS / DISA STIG / NIST 800-171r2 compliance mapping · interactive remediation with backup and undo · browser-based WebUI · peripheral-aware compatibility warnings · step-by-step guided remediation
 
 ---
 
 ## Features
 
-- **Read-only by default** — collects configuration signals only; never changes anything without explicit `-Remediate`
+- **Read-only by default** — collects configuration signals only; never changes anything without explicit `-Remediate` or WebUI fix action
 - **Fully offline** — uses only OS-native channels (Registry, CIM/WMI, built-in cmdlets, `netsh`, `auditpol`, `wevtutil`)
 - **Dual scoring** — SeverityScore (CRITICAL/HIGH exposure) and HygieneScore (MEDIUM/LOW hygiene), both 0–100
 - **Delta engine** — baseline a known-good state, re-run after changes; the HTML report gains a Δ tab showing regressions, improvements, and new checks
 - **Compliance mapping** — every finding annotated with CIS L1/L2, DISA STIG, and NIST 800-171r2 control IDs
 - **Guided remediation** — interactive fix loop with safety tiers (SAFE / CAUTION / RISKY), automatic backup before every change, and full undo
+- **Browser WebUI** (`-WebUI`) — live dashboard with per-finding fix buttons, guide steps, shortcut launchers, and real-time rescan
+- **Peripheral-aware warnings** — detects printers, mapped drives, and shared folders; automatically annotates findings with compatibility impact before you apply fixes
+- **Step-by-step guides** — manual findings show expandable guides with OS navigation steps and shortcut buttons to open the relevant Settings panel
 - **Self-contained HTML report** — single file, no internet required, dark-themed with compliance badge rendering
 - **Structured JSON output** — machine-readable, schema-stable, suitable for CI pipelines and SIEM ingestion
 
@@ -23,11 +26,14 @@
 
 ```
 apex-auditor/
-├── Windows_Audit.ps1              ← entry point (param block, manifest, main loop)
+├── Windows_Audit.ps1              ← entry point (param block, manifest, main loop, wizard)
 ├── Engine/
 │   ├── Core.ps1                   ← findings accumulator, helpers, scoring, delta, compliance
 │   ├── Report.ps1                 ← TUI console report, HTML exporter, path resolver
-│   └── Remediate.ps1              ← backup, interactive fix loop, undo
+│   ├── Remediate.ps1              ← backup, interactive fix loop, undo
+│   ├── WebUI.ps1                  ← embedded HTTP server + single-page dashboard
+│   ├── CompatScan.ps1             ← peripheral detection, _ImpactWarning, _Guide, _Shortcut stamping
+│   └── Wizard.ps1                 ← post-scan guided wizard (profile-based recommendations)
 ├── Checks/
 │   ├── Check-ASR.ps1              ← Attack Surface Reduction rules
 │   ├── Check-AuditPol.ps1         ← Advanced audit subcategories (6 sub-checks)
@@ -52,10 +58,11 @@ apex-auditor/
 │   └── Check-WEF.ps1              ← Windows Event Forwarding subscriptions (Deep only)
 ├── compliance_map.json            ← CIS / DISA STIG / NIST 800-171r2 control mapping
 ├── Invoke-AuditLabTest.ps1        ← Full scientific test harness (Suites S1–S9)
-└── ExTest.ps1                     ← Convenience wrapper for the test harness
+├── ExTest.ps1                     ← Convenience wrapper for the test harness
+└── ROADMAP.md                     ← Future improvements and candidate checks
 ```
 
-All layers must be present side-by-side. `Windows_Audit.ps1` dot-sources `Engine\Core.ps1`, `Engine\Report.ps1`, and `Engine\Remediate.ps1` outside the main `try/catch`, then dot-sources every `Checks\Check-*.ps1` via a glob. Missing files cause immediate `CommandNotFoundException`.
+All layers must be present side-by-side. `Windows_Audit.ps1` dot-sources `Engine\Core.ps1`, `Engine\Report.ps1`, `Engine\Remediate.ps1`, `Engine\WebUI.ps1`, `Engine\CompatScan.ps1`, and `Engine\Wizard.ps1` outside the main `try/catch`, then dot-sources every `Checks\Check-*.ps1` via a glob. Missing files cause immediate `CommandNotFoundException`.
 
 ---
 
@@ -63,7 +70,7 @@ All layers must be present side-by-side. `Windows_Audit.ps1` dot-sources `Engine
 
 - Windows 10 / 11 (x64)
 - PowerShell 5.1 (Windows PowerShell) or PowerShell 7+
-- **Run as Administrator** — required for full WMI/CIM coverage, BitLocker status, and audit policy reads
+- **Run as Administrator** — required for full WMI/CIM coverage, BitLocker status, SMB configuration, and audit policy reads
 - All `Engine\` and `Checks\` files present in the directory structure above
 
 ---
@@ -95,7 +102,7 @@ Default: Deep mode, PersonalLaptop profile, auto-named JSON + HTML in the curren
 
 | Mode | Checks | Notes |
 |------|--------|-------|
-| `Fast` | 18 | All checks except `Check-WEF` and `Check-ServicePaths` (deep analysis only) and `Check-ScheduledTasks` (deep only) |
+| `Fast` | 18 | All checks except `Check-WEF`, `Check-ServicePaths`, and `Check-ScheduledTasks` (deep analysis only) |
 | `Deep` | 21 | Full posture — all checks including WEF subscription enumeration, unquoted service path analysis, and scheduled task ACL inspection |
 
 **Profiles** — stored in the JSON context field:
@@ -106,6 +113,24 @@ Default: Deep mode, PersonalLaptop profile, auto-named JSON + HTML in the curren
 | `Enterprise` | Domain-joined workstation, corporate baseline |
 | `Lab` | Test/dev environment |
 | `Paranoid` | High-value targets, strictest interpretation |
+
+### Browser WebUI
+
+```powershell
+.\Windows_Audit.ps1 -WebUI                             # Scan + open live dashboard
+.\Windows_Audit.ps1 -WebUI -Port 8080                  # Custom port (default: 8443)
+```
+
+Opens a local HTTP dashboard at `http://localhost:<port>` with:
+- Live findings list grouped by category, sorted by severity
+- Per-finding **Fix** buttons with SAFE / CAUTION / RISKY tier confirmation
+- CAUTION and RISKY modals display the finding's specific compatibility warning
+- **Step-by-step guide** toggle on Manual findings (stays open across poll cycles)
+- **Shortcut buttons** to open the relevant Windows Settings panel directly
+- **Apply Recommended** batch button for all SAFE-tier fixes
+- **Rescan** to re-run the audit after applying fixes
+- Peripheral detection banner (printers, shared folders) when compatibility warnings are active
+- Two-second polling with automatic backoff if the server stops
 
 ### Baseline and delta tracking
 
@@ -126,7 +151,7 @@ The HTML report gains a **Δ Delta** tab showing regressions, improvements, and 
 .\Windows_Audit.ps1 -Remediate
 ```
 
-For each vulnerable finding the tool displays the finding, its safety tier, and the exact fix command, then prompts:
+For each vulnerable finding the tool displays the finding, its safety tier, any compatibility warning, and the exact fix command, then prompts:
 
 ```
 [Y]es  [N]o  [A]ll-safe  [S]kip-remaining  [Q]uit
@@ -160,6 +185,42 @@ Before every applied fix, the tool exports the affected registry hive (`.reg`) o
 
 ---
 
+## Peripheral-aware compatibility warnings
+
+Before stamping findings, `Engine\CompatScan.ps1` enumerates:
+- **Printers** — network, shared, and local physical printers (via `Win32_Printer`)
+- **Mapped network drives** — UNC-backed drives (via `Get-PSDrive`)
+- **Shared folders** — non-default SMB shares (via `Get-SmbShare`)
+
+Findings that could break detected peripherals or services are automatically annotated with `_ImpactWarning`. These are shown as orange banners on finding cards in the WebUI, printed in yellow `[!]` lines before fix prompts in the console, and included verbatim in CAUTION/RISKY confirmation modals.
+
+**Findings with compatibility warnings:**
+
+| Finding | Warning type | Condition |
+|---------|-------------|-----------|
+| `SPOOLER-SVC` | PRINTER IMPACT | Physical printers detected |
+| `SPOOLER-PNP` | PRINTER IMPACT | Physical printers detected |
+| `SMB1` | COMPATIBILITY | Network printers or mapped drives |
+| `SMBENC` | COMPATIBILITY | Shared printers, shared folders, or network printers |
+| `SMBSIGS` / `SMBSIGC` | COMPATIBILITY | Mapped drives or shared folders |
+| `NTLM` | COMPATIBILITY | Network printers or mapped drives |
+| `LLMNR` | COMPATIBILITY | Network printers, mapped drives, or shared printers |
+| `NETBIOS` | COMPATIBILITY | Network printers or mapped drives |
+| `FW-Domain/Private/Public` | COMPATIBILITY | Shared printers or shared folders |
+| `FW-SVC` | CONNECTIVITY | Unconditional |
+| `VBS` / `HVCI` | DRIVER RISK | Unconditional |
+| `CG` | COMPATIBILITY | Unconditional |
+| `RDP` | SESSION RISK | Unconditional |
+| `RDP-NLA` | SESSION RISK | Unconditional |
+| `PPL` | DRIVER RISK | Unconditional |
+| `CFA` | APPLICATION RISK | Unconditional |
+| `ASR` | APPLICATION RISK | Unconditional |
+| `EXPROT-DEP` | APPLICATION RISK | Unconditional |
+| `EXPROT-ASLR` | APPLICATION RISK | Unconditional |
+| `UNQUOTED_SERVICE_PATH` | SERVICE RISK | Unconditional |
+
+---
+
 ## Check domains
 
 | Category | Check file | Finding IDs | Mode |
@@ -188,11 +249,11 @@ Before every applied fix, the tool exports the affected registry hive (`.reg`) o
 
 ---
 
-## JSON output schema (v3.0)
+## JSON output schema (v4.9)
 
 ```json
 {
-  "Context": {
+  "context": {
     "Hostname":     "string",
     "OSCaption":    "string",
     "OSBuild":      "string",
@@ -201,13 +262,19 @@ Before every applied fix, the tool exports the affected registry hive (`.reg`) o
     "TimestampUTC": "yyyy-MM-ddTHH:mm:ssZ",
     "Mode":         "Fast|Deep",
     "Profile":      "PersonalLaptop|Enterprise|Lab|Paranoid",
-    "PSVersion":    "string"
+    "PSVersion":    "string",
+    "ToolVersion":  "string"
   },
-  "ScoreBefore":  "int (0–100; Critical/High exposure — lower = more exposed)",
-  "HygieneScore": "int (0–100; Medium/Low hygiene — lower = worse hygiene)",
-  "ScoreAfter":   "-1 (reserved for post-remediation delta)",
-  "Delta":        "null | { BaselineTimestamp, BaselineMode, SeverityScoreDelta, HygieneScoreDelta, Regressions[], Improvements[], NewChecks[] }",
-  "Findings": [
+  "scores": {
+    "SeverityScore": "int (0–100)",
+    "HygieneScore":  "int (0–100)"
+  },
+  "peripherals": {
+    "Printers":      [{ "Name": "string", "Type": "Network|Shared|Local" }],
+    "SharedFolders": ["string"],
+    "MappedDrives":  ["string"]
+  },
+  "findings": [
     {
       "Id":             "string — unique per run",
       "Category":       "string",
@@ -215,17 +282,23 @@ Before every applied fix, the tool exports the affected registry hive (`.reg`) o
       "Severity":       "CRITICAL | HIGH | MEDIUM | LOW | PASS",
       "Vulnerable":     "bool",
       "Confidence":     "High | Medium | Low | NotApplicable | NoAccess | QueryFailed",
-      "Observed":       "string — what was found",
-      "Expected":       "string — what the baseline requires",
-      "Source":         "string — registry path, CIM class, cmdlet, or exe",
-      "Fix":            "string — exact remediation command or guidance",
+      "Observed":       "string",
+      "Expected":       "string",
+      "Source":         "string",
+      "Fix":            "string",
       "Note":           "string",
+      "Recommendation": "Recommended | Optional | Informational (null if absent)",
       "ComplianceRefs": {
         "CIS":       ["string"],
-        "CIS_Level": "int (1 or 2)",
+        "CIS_Level": "int",
         "STIG":      ["string"],
         "NIST":      ["string"]
-      }
+      },
+      "_Tier":          "SAFE | CAUTION | RISKY",
+      "_FixType":       "Auto | Manual | None",
+      "_ImpactWarning": "string (present only when a compatibility risk exists)",
+      "_Guide":         ["string"] "(present only on Manual findings with step-by-step instructions)",
+      "_Shortcut":      { "Cmd": "string", "Label": "string" } "(present only when a Settings shortcut exists)"
     }
   ]
 }
@@ -244,6 +317,7 @@ HygieneScore  = 100 − Σ(MEDIUM×5   + LOW×2)     [floor 0]
 - `Confidence=NoAccess` never has `Vulnerable=true`
 - Every `Vulnerable=true` finding has a non-`N/A` Fix field
 - All finding IDs are unique within a single run
+- `_` prefixed fields are runtime annotations — not present in the baseline JSON written by `-Baseline`
 - `ComplianceRefs` present on all findings when `compliance_map.json` is found
 
 ---
@@ -280,7 +354,9 @@ HygieneScore  = 100 − Σ(MEDIUM×5   + LOW×2)     [floor 0]
 5. If multiple findings share a single `try` block, use the rollback pattern (`$countBefore = $Script:Findings.Count`) to prevent partial finding sets on failure.
 6. Add the new finding IDs to `compliance_map.json`.
 7. Add the IDs to S9's expected-ID list in `Invoke-AuditLabTest.ps1`.
-8. Run `.\ExTest.ps1 -AuditScript .\Windows_Audit.ps1 -Suites S1,S2,S9` before opening a PR.
+8. To add a compatibility warning, add a `switch -Regex` branch in `Set-FindingImpactFlags` in `Engine\CompatScan.ps1`.
+9. To add a step-by-step guide or shortcut, add an entry in `Set-FindingGuides` in `Engine\CompatScan.ps1`.
+10. Run `.\ExTest.ps1 -AuditScript .\Windows_Audit.ps1 -Suites S1,S2,S9` before opening a PR.
 
 ---
 

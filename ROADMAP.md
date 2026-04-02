@@ -591,4 +591,37 @@ See items F-1 through F-18 in the checks table and P-1 through P-6 in the featur
 | P-5 | Feature | Differential alerts (email/webhook on regression vs baseline) |
 | P-6 | Feature | Finding suppression with justification |
 
-*Last updated: 2026-04-02 — v4.9.0 (bug fixes, security hardening, optimizations)*
+---
+
+## v4.9.1 — Guide Toggle Fix + Missing Compatibility Warnings (2026-04-02)
+
+### Bug fixed
+
+**Guide sections auto-closed after opening (WebUI).**
+Root cause: `render()` did a full `innerHTML` replacement of `#app` on every data change, destroying all expanded guide `<div>` elements. The 2-second poll would trigger `render()` immediately after a user expanded a guide, collapsing it.
+Fix: open guide IDs are now tracked in a JS `Set` (`openGuides`). `restoreGuides()` is called at the end of every `render()` to re-expand any guide that was open before the DOM was rebuilt.
+
+### Missing compatibility warnings added
+
+8 finding IDs that could break services, drivers, or network connectivity had no `_ImpactWarning`. Added to `Engine\CompatScan.ps1`:
+
+| Finding | Warning type |
+|---------|-------------|
+| `FW-SVC` | CONNECTIVITY — firewall service re-enable may block all inbound immediately |
+| `PPL` | DRIVER RISK — LSASS PPL may break 3rd-party auth/security software; reboot required |
+| `RDP-NLA` | SESSION RISK — NLA requirement may lock out older RDP clients |
+| `CFA` | APPLICATION RISK — Controlled Folder Access blocks apps until whitelisted |
+| `ASR` | APPLICATION RISK — Block mode may break Office macros and WMI subscriptions |
+| `EXPROT-DEP` | APPLICATION RISK — system-wide DEP may crash legacy 32-bit apps |
+| `EXPROT-ASLR` | APPLICATION RISK — Force ASLR may crash apps with non-relocatable DLLs |
+| `UNQUOTED_SERVICE_PATH` | SERVICE RISK — sc.exe path change could prevent service start |
+
+### WebUI UX improvement
+
+CAUTION and RISKY confirm modals now display the finding's specific `_ImpactWarning` text instead of the previous generic "may affect legacy devices" message. Falls back to generic text when no warning is present.
+
+### Documentation
+
+README fully rewritten: updated to v4.9.1, added WebUI usage, `-WebUI`/`-Port` flags, peripheral-aware warnings table, `Engine\CompatScan.ps1` and `Engine\Wizard.ps1` in project structure, updated JSON schema to v4.9 format (includes `_Tier`, `_FixType`, `_ImpactWarning`, `_Guide`, `_Shortcut`, `peripherals`, `scores` fields), added step 8–9 to "Adding a new check" guide.
+
+*Last updated: 2026-04-02 — v4.9.1 (guide toggle fix, missing compat warnings, modal UX, README rewrite)*
