@@ -93,7 +93,8 @@ param(
     [switch] $Remediate,
     [string] $Undo       = '',
     [string] $Portable   = '',   # All output to this dir; defaults to $PSScriptRoot if passed without value
-    [switch] $CleanOnExit,       # Delete JSON+HTML on exit (backups are always kept)
+    [switch] $CleanOnExit,       # Delete JSON+HTML on exit
+    [switch] $KeepBackups,       # Preserve backup dir on exit (default: auto-deleted for zero-trace)
     [switch] $Guided,            # Interactive wizard mode
     [switch] $WebUI,             # Launch interactive localhost web dashboard
     [switch] $Version,
@@ -127,8 +128,8 @@ foreach ($f in $checkFiles) { . $f.FullName }
 # ---------------------------------------------------------------------------
 #  CONSTANTS
 # ---------------------------------------------------------------------------
-$Script:TOOL_VERSION  = '4.9.1'
-$Script:BUILD_DATE    = '2026-04-01'
+$Script:TOOL_VERSION  = '4.9.2'
+$Script:BUILD_DATE    = '2026-04-02'
 $Script:SCORE_WEIGHTS = @{ CRITICAL=15; HIGH=8; MEDIUM=5; LOW=2 }
 $Script:CimSession    = $null
 
@@ -458,6 +459,9 @@ try {
         }
     }
     Remove-LogFile   # ephemeral log -- deleted on clean exit
+    if (-not $KeepBackups -and $backupDir) {
+        Remove-BackupDir -BackupPath $backupDir
+    }
 }
 
 exit $exitCode

@@ -10,6 +10,9 @@ function Invoke-CheckDeviceGuard {
     try {
         $dg = Get-Cim 'Win32_DeviceGuard' -Namespace 'root\Microsoft\Windows\DeviceGuard'
 
+        # Pre-check: firmware must support VT-x for VBS/HVCI to work
+        $vbsCapable = $dg.VirtualizationFirmwareEnabled -eq $true
+
         $vbsObs  = if ($null -ne $dg.VirtualizationBasedSecurityStatus)        { "$($dg.VirtualizationBasedSecurityStatus)" }  else { 'Unknown' }
         $hvciObs = if ($null -ne $dg.HypervisorEnforcedCodeIntegrityStatus)     { "$($dg.HypervisorEnforcedCodeIntegrityStatus)" } else { 'Unknown' }
         $umciObs = if ($null -ne $dg.CodeIntegrityPolicyEnforcementStatus)      { "$($dg.CodeIntegrityPolicyEnforcementStatus)" } else { 'Unknown' }
@@ -18,20 +21,20 @@ function Invoke-CheckDeviceGuard {
         Add-Finding -Id 'VBS' -Category 'DeviceGuard' -CheckName 'VBS' `
             -Severity 'CRITICAL' `
             -Vulnerable ($dg.VirtualizationBasedSecurityStatus -ne 2) `
-            -Confidence 'High' `
+            -Confidence $(if($vbsCapable){'High'}else{'NotApplicable'}) `
             -Observed $vbsObs -Expected '2 (Running)' `
             -Source 'CIM Win32_DeviceGuard' `
-            -Fix 'Enable VBS in Windows Security > Core Isolation > Memory Integrity.' `
-            -Note 'VBS is the foundation of Credential Guard and HVCI.'
+            -Fix $(if($vbsCapable){'$p=''HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard''; if(-not(Test-Path $p)){New-Item $p -Force|Out-Null}; Set-ItemProperty $p EnableVirtualizationBasedSecurity 1 -Type DWord'}else{'N/A'}) `
+            -Note $(if($vbsCapable){'VBS is the foundation of Credential Guard and HVCI.'}else{'VBS requires firmware virtualization (VT-x/AMD-V) which is not enabled in this system firmware.'})
 
         Add-Finding -Id 'HVCI' -Category 'DeviceGuard' -CheckName 'HVCI / Memory Integrity' `
             -Severity 'HIGH' `
             -Vulnerable ($dg.HypervisorEnforcedCodeIntegrityStatus -ne 2) `
-            -Confidence 'High' `
+            -Confidence $(if($vbsCapable){'High'}else{'NotApplicable'}) `
             -Observed $hvciObs -Expected '2 (Enforced)' `
             -Source 'CIM Win32_DeviceGuard' `
-            -Fix 'Enable Memory Integrity in Windows Security > Core Isolation.' `
-            -Note 'HVCI blocks kernel-mode code injection attacks.'
+            -Fix $(if($vbsCapable){'$p=''HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity''; if(-not(Test-Path $p)){New-Item $p -Force|Out-Null}; Set-ItemProperty $p Enabled 1 -Type DWord'}else{'N/A'}) `
+            -Note $(if($vbsCapable){'HVCI blocks kernel-mode code injection attacks.'}else{'HVCI requires firmware virtualization (VT-x/AMD-V) which is not enabled in this system firmware.'})
 
         Add-Finding -Id 'UMCI' -Category 'Execution' -CheckName 'WDAC/UMCI Posture' `
             -Severity 'LOW' `

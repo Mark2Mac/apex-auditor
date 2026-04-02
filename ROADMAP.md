@@ -625,3 +625,78 @@ CAUTION and RISKY confirm modals now display the finding's specific `_ImpactWarn
 README fully rewritten: updated to v4.9.1, added WebUI usage, `-WebUI`/`-Port` flags, peripheral-aware warnings table, `Engine\CompatScan.ps1` and `Engine\Wizard.ps1` in project structure, updated JSON schema to v4.9 format (includes `_Tier`, `_FixType`, `_ImpactWarning`, `_Guide`, `_Shortcut`, `peripherals`, `scores` fields), added step 8–9 to "Adding a new check" guide.
 
 *Last updated: 2026-04-02 — v4.9.1 (guide toggle fix, missing compat warnings, modal UX, README rewrite)*
+
+---
+
+## v4.9.2 — Manual → Auto Fix Conversion + Pre-checks + Zero-Trace (2026-04-02)
+
+### Manual → Auto fix conversions
+
+4 findings previously marked Manual (text descriptions ending in `.`) are now Auto-applicable from the WebUI and the `-Remediate` TUI loop:
+
+| Finding | Old fix (Manual) | New fix (Auto) | Tier |
+|---------|-----------------|---------------|------|
+| `NETBIOS` | UI walkthrough via NIC Properties | Registry write to `NetBT\Parameters\Interfaces` | CAUTION |
+| `VBS` | Windows Security > Core Isolation UI | Registry write `EnableVirtualizationBasedSecurity=1` | RISKY |
+| `HVCI` | Windows Security > Core Isolation UI | Registry write `Scenarios\HVCI\Enabled=1` | RISKY |
+| `FWRISK` | Review rules in wf.msc manually | `Disable-NetFirewallRule` on unowned/ungrouped Public rules | CAUTION |
+
+Registry paths for NETBIOS, VBS, and HVCI are matched by the existing `Backup-FindingState` regex — backups are automatic.
+
+### Pre-checks before applying fixes
+
+**VBS / HVCI — firmware virtualization check:**
+`Check-DeviceGuard.ps1` now reads `VirtualizationFirmwareEnabled` from `Win32_DeviceGuard` before emitting VBS and HVCI findings. On hardware where VT-x/AMD-V is not enabled in firmware:
+- `Confidence` is set to `NotApplicable`
+- `Fix` is set to `N/A` → `_FixType = None` → not shown as fixable in the WebUI
+- The note explains the firmware constraint
+
+On capable hardware the findings remain CRITICAL/HIGH with the auto fix command.
+
+**FWRISK — third-party firewall detection:**
+`Check-Firewall.ps1` queries `root\SecurityCenter2 FirewallProduct` before the FWRISK finding. If a third-party firewall product is registered:
+- `Fix` is set to `N/A` (modifying Windows Firewall rules would have no security effect)
+- The note says `Third-party firewall detected; Windows Firewall rules are not the primary control.`
+
+On systems using only native Windows Firewall the auto fix is available and only disables rules with no `Group` and no `Owner` — all built-in Windows rules (printers, mDNS, Wi-Fi Direct, etc.) are preserved.
+
+### BLPBA — guided admin PowerShell launch
+
+`BLPBA` remains Manual (BitLocker PIN must be entered interactively, cannot be set from a browser). The guide shortcut is upgraded from `gpedit.msc` to a direct admin PowerShell launcher:
+- Shortcut opens an elevated PowerShell window
+- The window automatically sets the three required GPO registry keys (`UseAdvancedStartup`, `UseEnhancedPin`, `UseTPMPIN`)
+- On-screen instructions guide the user to run `manage-bde -protectors -add C: -TPMAndPIN`
+- Alphanumeric PINs are supported
+
+### Firewall rule backup and undo
+
+`Engine\Remediate.ps1` now supports a new backup type for the FWRISK auto fix:
+- **Backup:** Before disabling rules, `Backup-FindingState` captures `Name` + `DisplayName` for every affected rule into a `_fwrules.json` file
+- **Undo:** `Invoke-RemediationUndo` now restores `*_fwrules.json` files, re-enabling each rule by name via `Enable-NetFirewallRule`
+
+### Zero-trace system
+
+**Problem:** `C:\ProgramData\ApexAudit\Backups\` accumulated `.reg`, `_svc.json`, `_fwrules.json`, and `manifest.json` files indefinitely across sessions with no cleanup.
+
+**Solution:** New `Remove-BackupDir` function in `Engine\Remediate.ps1`.
+- Removes the backup directory tree recursively
+- Removes the parent `ApexAudit\` directory if it becomes empty
+- Called in the `finally` block of both `Windows_Audit.ps1` and `Engine\WebUI.ps1`
+
+**New `-KeepBackups` switch in `Windows_Audit.ps1`:**
+
+| Invocation | Behavior |
+|-----------|---------|
+| `.\Windows_Audit.ps1 -Remediate` | Backups cleaned on exit (default) |
+| `.\Windows_Audit.ps1 -Remediate -KeepBackups` | Backups preserved for manual undo |
+| `.\Windows_Audit.ps1 -WebUI` | Session backups cleaned on WebUI exit |
+| `.\Windows_Audit.ps1 -CleanOnExit` | Report + log + backups all cleaned (full zero-trace) |
+
+The ephemeral log in `%TEMP%` was already cleaned by `Remove-LogFile`; JSON/HTML reports by `-CleanOnExit`. With this release, backups complete the zero-trace picture.
+
+### CompatScan cleanup
+
+- Stale guides for `VBS`, `HVCI`, `NETBIOS`, `FWRISK` removed from `$guides` (Auto-fix findings never show guides in the WebUI)
+- `FWRISK` `_ImpactWarning` added: describes which rules are affected and how to restore via `wf.msc`
+
+*Last updated: 2026-04-02 — v4.9.2 (Manual→Auto conversions, pre-checks, firewall backup/undo, zero-trace cleanup)*

@@ -26,7 +26,7 @@ function Invoke-CheckNetwork {
         Add-Finding -Id 'NETBIOS' -Category 'Network' -CheckName 'NetBIOS over TCP/IP' `
             -Severity $nbSev -Vulnerable $nbV -Confidence 'High' `
             -Observed $nbObs -Expected 'Disabled' -Source 'CIM' `
-            -Fix 'Disable NetBIOS on all adapters via NIC Properties > TCP/IP > Advanced > WINS.' `
+            -Fix "Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces' | ForEach-Object { Set-ItemProperty -Path `$_.PSPath -Name NetbiosOptions -Value 2 }" `
             -Note 'NetBIOS enables NBNS poisoning attacks similar to LLMNR.'
     } catch {
         Add-Finding -Id 'NETBIOS' -Category 'Network' -CheckName 'NetBIOS over TCP/IP' `

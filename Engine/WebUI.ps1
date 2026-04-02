@@ -927,6 +927,12 @@ function Start-AuditWebUI {
     } finally {
         try { $listener.Close() } catch { }
         Remove-LogFile   # ephemeral log -- deleted on clean exit
+        if (-not $KeepBackups) {
+            $sessionBackups = Join-Path $env:ProgramData 'ApexAudit\Backups'
+            if (Test-Path $sessionBackups) {
+                Remove-BackupDir -BackupPath $sessionBackups
+            }
+        }
         Write-Host ''
         Write-Host '  [*] APEX Web Dashboard stopped.' -ForegroundColor DarkCyan
     }

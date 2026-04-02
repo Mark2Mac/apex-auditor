@@ -40,17 +40,24 @@ function Invoke-CheckFirewall {
         }
     }
     try {
+        # Pre-check: detect third-party firewall (SecurityCenter2 namespace)
+        $thirdPartyFW = $false
+        try {
+            $fwProducts = @(Get-CimInstance -Namespace 'root\SecurityCenter2' -ClassName 'FirewallProduct' -ErrorAction SilentlyContinue)
+            $thirdPartyFW = $fwProducts.Count -gt 0
+        } catch { }
+
         $cnt  = @(Get-NetFirewallRule -Direction Inbound -Enabled True -Action Allow `
                     -ErrorAction SilentlyContinue |
-                  Where-Object { $_.Profile -match 'Public' -and -not $_.Owner }).Count
+                  Where-Object { $_.Profile -match 'Public' -and -not $_.Owner -and (-not $_.Group) }).Count
         $vuln = $cnt -gt 5
         $sev  = if ($vuln) { 'MEDIUM' } else { 'PASS' }
         $obs  = if ($cnt -eq 0) { 'None' } else { "Count=$cnt" }
         Add-Finding -Id 'FWRISK' -Category 'Firewall' -CheckName 'Risky Inbound Allow Rules (Public)' `
             -Severity $sev -Vulnerable $vuln -Confidence 'Medium' `
             -Observed $obs -Expected 'None or minimal' -Source 'Get-NetFirewallRule' `
-            -Fix 'Review and tighten inbound firewall rules on the Public profile.' `
-            -Note 'High rule count on Public profile increases attack surface.'
+            -Fix $(if(-not $thirdPartyFW){'Get-NetFirewallRule -Direction Inbound -Enabled True -Action Allow | Where-Object { $_.Profile -match ''Public'' -and -not $_.Owner -and (-not $_.Group) } | Disable-NetFirewallRule'}else{'N/A'}) `
+            -Note $(if($thirdPartyFW){'Third-party firewall detected; Windows Firewall rules are not the primary control.'}else{'Disables third-party app rules on Public profile. Built-in Windows rules (printers, mDNS, Wi-Fi Direct) are preserved.'})
     } catch {
         Add-Finding -Id 'FWRISK' -Category 'Firewall' -CheckName 'Risky Inbound Allow Rules (Public)' `
             -Severity 'PASS' -Vulnerable $false -Confidence 'QueryFailed' `

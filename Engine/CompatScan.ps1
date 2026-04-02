@@ -194,6 +194,9 @@ function Set-FindingImpactFlags {
         '^UNQUOTED_SERVICE_PATH' {
             "SERVICE RISK: Modifying the service binary path could prevent the service from starting if the quoted path or arguments are incorrect. Verify the fix command before applying."
         }
+        '^FWRISK$' {
+            "FIREWALL: Disables third-party app rules (no Group/Owner) on the Public profile. Built-in Windows rules for printers, mDNS, Wi-Fi Direct are preserved. Disabled rules can be re-enabled in wf.msc."
+        }
         default { $null }
         }
 
@@ -214,25 +217,8 @@ function Set-FindingGuides {
     )
 
     # Map: FindingId -> @{ Steps=[]; Shortcut=@{Cmd='...'; Label='...'} }
+    # Note: VBS, HVCI, NETBIOS, FWRISK are now Auto-fix -- no guides needed.
     $guides = @{
-        'VBS'        = @{
-            Steps   = @(
-                'Open Windows Security',
-                'Go to Device Security > Core Isolation Details',
-                'Enable "Memory Integrity"',
-                'Restart the PC when prompted'
-            )
-            Shortcut = @{ Cmd='Start-Process "windowsdefender://coreisolation"'; Label='Open Core Isolation' }
-        }
-        'HVCI'       = @{
-            Steps   = @(
-                'Open Windows Security',
-                'Go to Device Security > Core Isolation Details',
-                'Enable "Memory Integrity"',
-                'Restart the PC when prompted'
-            )
-            Shortcut = @{ Cmd='Start-Process "windowsdefender://coreisolation"'; Label='Open Core Isolation' }
-        }
         'CG'         = @{
             Steps   = @(
                 'Open gpedit.msc',
@@ -245,13 +231,16 @@ function Set-FindingGuides {
         }
         'BLPBA'      = @{
             Steps   = @(
-                'Open gpedit.msc',
-                'Go to Computer Configuration > Administrative Templates > Windows Components > BitLocker Drive Encryption > Operating System Drives',
-                'Enable "Allow enhanced PINs for startup"',
-                'Then run: manage-bde -protectors -add C: -TPMAndPIN',
-                'Enter your PIN when prompted'
+                'Click the shortcut button to launch an elevated PowerShell',
+                'The script sets the required GPO registry keys automatically',
+                'Run the command shown: manage-bde -protectors -add C: -TPMAndPIN',
+                'Enter your desired PIN (alphanumeric supported)',
+                'Restart the PC for the new protector to take effect'
             )
-            Shortcut = @{ Cmd='Start-Process gpedit.msc'; Label='Open Group Policy Editor' }
+            Shortcut = @{
+                Cmd   = 'Start-Process powershell -Verb RunAs -ArgumentList ''-NoExit -Command "& { $k=''''HKLM:\SOFTWARE\Policies\Microsoft\FVE''''; if(-not(Test-Path $k)){New-Item $k -Force|Out-Null}; Set-ItemProperty $k UseAdvancedStartup 1 -Type DWord; Set-ItemProperty $k UseEnhancedPin 1 -Type DWord; Set-ItemProperty $k UseTPMPIN 1 -Type DWord; Write-Host ''''GPO keys set. Now run:'''' -ForegroundColor Green; Write-Host ''''manage-bde -protectors -add C: -TPMAndPIN'''' -ForegroundColor Yellow }"'''
+                Label = 'Launch BitLocker PIN Setup'
+            }
         }
         'TPM'        = @{
             Steps   = @(
@@ -272,27 +261,6 @@ function Set-FindingGuides {
                 'Save and restart'
             )
             Shortcut = @{ Cmd='Start-Process ms-settings:recovery'; Label='Advanced Startup (UEFI)' }
-        }
-        'NETBIOS'    = @{
-            Steps   = @(
-                'Open Network Connections (ncpa.cpl)',
-                'For each network adapter: right-click > Properties',
-                'Select "Internet Protocol Version 4 (TCP/IPv4)" > Advanced',
-                'WINS tab > select "Disable NetBIOS over TCP/IP"',
-                'Repeat for each active adapter',
-                'Or use the PowerShell fix command shown above (faster)'
-            )
-            Shortcut = @{ Cmd='Start-Process ncpa.cpl'; Label='Open Network Connections' }
-        }
-        'FWRISK'     = @{
-            Steps   = @(
-                'Open Windows Firewall with Advanced Security (wf.msc)',
-                'Go to Inbound Rules',
-                'Filter by Profile = Public and Action = Allow',
-                'Disable or delete rules that are not needed',
-                'Keep only rules tied to specific software you actively use'
-            )
-            Shortcut = @{ Cmd='Start-Process wf.msc'; Label='Open Advanced Firewall' }
         }
         'ASR'        = @{
             Steps   = @(

@@ -150,6 +150,22 @@ function Backup-FindingState {
         }
     }
 
+    # Firewall rule-based fix: save affected rules before disabling
+    if ($fix -match 'Disable-NetFirewallRule') {
+        try {
+            $affectedRules = @(
+                Get-NetFirewallRule -Direction Inbound -Enabled True -Action Allow -ErrorAction SilentlyContinue |
+                Where-Object { $_.Profile -match 'Public' -and -not $_.Owner -and (-not $_.Group) } |
+                Select-Object Name, DisplayName
+            )
+            if ($affectedRules.Count -gt 0) {
+                $backFile = Join-Path $BackupDir "$($id -replace '[:\\]','_')_fwrules.json"
+                $affectedRules | ConvertTo-Json -Depth 3 | Set-Content $backFile -Encoding UTF8
+                return $backFile
+            }
+        } catch { <# silently skip #> }
+    }
+
     return $null
 }
 
@@ -403,6 +419,23 @@ function Invoke-RemediationUndo {
         }
     }
 
+    # Restore firewall rules (_fwrules.json files)
+    $fwFiles = Get-ChildItem -Path $BackupPath -Filter '*_fwrules.json' -ErrorAction SilentlyContinue
+    foreach ($fwFile in $fwFiles) {
+        try {
+            $rules = Get-Content $fwFile.FullName -Raw | ConvertFrom-Json
+            foreach ($rule in $rules) {
+                Write-TUI "  Re-enabling firewall rule: $($rule.DisplayName) ..." -Color DarkCyan
+                Enable-NetFirewallRule -Name $rule.Name -ErrorAction SilentlyContinue
+            }
+            Write-TUI "  [OK] $($fwFile.Name) -- $(@($rules).Count) rule(s) re-enabled" -Color Green
+            $restored++
+        } catch {
+            Write-TUI "  [FAILED] $($fwFile.Name) : $_" -Color Red
+            $failed++
+        }
+    }
+
     Write-TUILine
     Write-TUI "  UNDO SUMMARY" -Color Cyan
     Write-TUI "    Restored : $restored" -Color Green
@@ -411,4 +444,26 @@ function Invoke-RemediationUndo {
         Write-TUI '  Some items could not be restored automatically. Check backup files manually.' -Color Yellow
     }
     Write-TUILine
+}
+
+# ---------------------------------------------------------------------------
+#  REMOVE-BACKUPDIR
+# ---------------------------------------------------------------------------
+function Remove-BackupDir {
+    <#
+    .SYNOPSIS
+        Removes the session's backup directory tree. Called on clean exit
+        to leave no trace. Skipped if -KeepBackups was specified.
+    #>
+    param([string]$BackupPath)
+    if (-not $BackupPath -or -not (Test-Path $BackupPath)) { return }
+    try {
+        Remove-Item $BackupPath -Recurse -Force -ErrorAction Stop
+        Write-Log "Backup directory removed: $BackupPath"
+        # Remove parent ApexAudit dir if now empty
+        $parent = Split-Path $BackupPath
+        if ((Test-Path $parent) -and @(Get-ChildItem $parent -ErrorAction SilentlyContinue).Count -eq 0) {
+            Remove-Item $parent -Force -ErrorAction SilentlyContinue
+        }
+    } catch { Write-Log "Failed to remove backup dir: $_" -Level WARN }
 }
