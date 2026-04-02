@@ -170,6 +170,30 @@ function Set-FindingImpactFlags {
                 "COMPATIBILITY: Requiring SMB signing may disconnect older NAS devices or Linux Samba shares that do not support signing."
             }
         }
+        '^FW-SVC$' {
+            "CONNECTIVITY: Re-enabling the Firewall service will immediately enforce all firewall profiles. Inbound connections (RDP, shared folders, printers) may be blocked until rules are reviewed."
+        }
+        '^PPL$' {
+            "DRIVER RISK: Enabling LSASS PPL may break third-party authentication providers, smartcard middleware, or security software that hooks LSASS. Requires reboot."
+        }
+        '^RDP-NLA$' {
+            "SESSION RISK: Requiring NLA may prevent older RDP clients (pre-Vista, some thin clients) from connecting. Verify all remote desktop clients support NLA before enabling."
+        }
+        '^CFA$' {
+            "APPLICATION RISK: Controlled Folder Access blocks unauthorized apps from writing to Documents/Desktop/etc. Many legitimate apps (installers, dev tools, backup software) will be blocked until whitelisted."
+        }
+        '^ASR$' {
+            "APPLICATION RISK: ASR rules in Block mode may prevent Office macros, WMI event subscriptions, and script execution from Office/email. Test in Audit mode first."
+        }
+        '^EXPROT-DEP$' {
+            "APPLICATION RISK: System-wide DEP may crash legacy 32-bit applications that execute code from data pages."
+        }
+        '^EXPROT-ASLR$' {
+            "APPLICATION RISK: Force ASLR may crash applications with DLLs not compiled for relocation (/DYNAMICBASE)."
+        }
+        '^UNQUOTED_SERVICE_PATH' {
+            "SERVICE RISK: Modifying the service binary path could prevent the service from starting if the quoted path or arguments are incorrect. Verify the fix command before applying."
+        }
         default { $null }
         }
 

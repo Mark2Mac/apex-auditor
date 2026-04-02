@@ -369,6 +369,7 @@ body{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSyst
 <script>
 const BASE = '$BaseUrl';
 let D = null, tab = 'vuln', pollTimer = null, pollFails = 0, renderTimer = null;
+const openGuides = new Set();
 function debounceRender(){clearTimeout(renderTimer);renderTimer=setTimeout(render,200);}
 
 function h(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
@@ -515,6 +516,7 @@ function render(){
     '</div>';
   }
   document.getElementById('app').innerHTML=html;
+  restoreGuides();
 }
 
 async function poll(){
@@ -570,11 +572,13 @@ function showModal(html, onConfirm){
 }
 
 async function doFix(id, tier, btn){
+  const f=(D.findings||[]).find(x=>x.Id===id);
+  const warn=(f&&f._ImpactWarning)?h(f._ImpactWarning):'This fix may affect legacy devices or network connectivity.';
   if(tier==='SAFE'){
     await applyFix(id, true, btn);
   } else if(tier==='CAUTION'){
     showModal(
-      '<h3>Confirm Fix</h3><p>This fix may affect legacy devices or network connectivity. Proceed?</p>'+
+      '<h3>Confirm Fix</h3><p>'+warn+'</p><p>Proceed?</p>'+
       '<div class="modal-btns"><button class="btn btn-undo" onclick="document.getElementById(\'modal-bg\').style.display=\'none\'">Cancel</button>'+
       '<button class="btn btn-caut" onclick="_modalConfirm(true)">Apply</button></div>',
       async()=>applyFix(id, true, btn)
@@ -582,7 +586,8 @@ async function doFix(id, tier, btn){
   } else {
     showModal(
       '<h3 style="color:var(--red)">&#9888; RISKY Fix</h3>'+
-      '<p>This fix may require a reboot or make irreversible system changes. Type the finding ID to confirm:</p>'+
+      '<p>'+warn+'</p>'+
+      '<p>Type the finding ID to confirm:</p>'+
       '<input id="risky-confirm" placeholder="'+id+'" autocomplete="off" spellcheck="false" style="text-transform:uppercase">'+
       '<div class="modal-btns"><button class="btn btn-undo" onclick="document.getElementById(\'modal-bg\').style.display=\'none\'">Cancel</button>'+
       '<button class="btn btn-risk" onclick="_modalConfirm(document.getElementById(\'risky-confirm\').value)">Apply</button></div>',
@@ -649,6 +654,15 @@ function toggleGuide(gid){
   const vis=el.style.display!=='none';
   el.style.display=vis?'none':'block';
   if(btn) btn.innerHTML=(vis?'&#9660;':'&#9650;')+' Step-by-step guide';
+  if(vis) openGuides.delete(gid); else openGuides.add(gid);
+}
+function restoreGuides(){
+  openGuides.forEach(gid=>{
+    const el=document.getElementById(gid);
+    const btn=document.getElementById('gt-'+gid);
+    if(el) el.style.display='block';
+    if(btn) btn.innerHTML='&#9650; Step-by-step guide';
+  });
 }
 
 function renderQuickActions(){
