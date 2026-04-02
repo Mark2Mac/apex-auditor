@@ -17,7 +17,8 @@ function Invoke-CheckDeviceGuard {
                       ($dg.VirtualizationBasedSecurityStatus -eq 2)
 
         $vbsObs  = if ($null -ne $dg.VirtualizationBasedSecurityStatus)        { "$($dg.VirtualizationBasedSecurityStatus)" }  else { 'Unknown' }
-        $hvciObs = if ($null -ne $dg.HypervisorEnforcedCodeIntegrityStatus)     { "$($dg.HypervisorEnforcedCodeIntegrityStatus)" } else { 'Unknown' }
+        $hvciRunning = 2 -in @($dg.SecurityServicesRunning)
+        $hvciObs = if ($hvciRunning) { '2 (Enforced)' } elseif (2 -in @($dg.SecurityServicesConfigured)) { 'Configured but not running' } else { 'Not running' }
         $umciObs = if ($null -ne $dg.CodeIntegrityPolicyEnforcementStatus)      { "$($dg.CodeIntegrityPolicyEnforcementStatus)" } else { 'Unknown' }
         $cgObs   = if ($null -ne $dg.SecurityServicesRunning -and @($dg.SecurityServicesRunning).Count -gt 0) { ($dg.SecurityServicesRunning -join ',') } else { 'Unknown' }
 
@@ -32,7 +33,7 @@ function Invoke-CheckDeviceGuard {
 
         Add-Finding -Id 'HVCI' -Category 'DeviceGuard' -CheckName 'HVCI / Memory Integrity' `
             -Severity 'HIGH' `
-            -Vulnerable ($dg.HypervisorEnforcedCodeIntegrityStatus -ne 2) `
+            -Vulnerable (-not $hvciRunning) `
             -Confidence $(if($vbsCapable){'High'}else{'NotApplicable'}) `
             -Observed $hvciObs -Expected '2 (Enforced)' `
             -Source 'CIM Win32_DeviceGuard' `
