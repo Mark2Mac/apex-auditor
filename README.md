@@ -2,7 +2,7 @@
 
 > **Offline, standalone Windows security auditor and guided hardening tool — written in PowerShell. No internet connection, no cloud, no external agents.**
 
-**v4.9.4** — 21 check domains · 60+ finding IDs · CIS / DISA STIG / NIST 800-171r2 compliance mapping · interactive remediation with backup and undo · browser-based WebUI · peripheral-aware compatibility warnings · step-by-step guided remediation
+**v4.9.5** — 21 check domains · 60+ finding IDs · CIS / DISA STIG / NIST 800-171r2 compliance mapping · interactive remediation with backup and undo · browser-based WebUI · peripheral-aware compatibility warnings · step-by-step guided remediation
 
 ---
 
@@ -239,7 +239,7 @@ Findings that could break detected peripherals or services are automatically ann
 | FirewallPosture | Check-FirewallPosture.ps1 | FW-SVC, FW-LOG | Fast+Deep |
 | SMB | Check-SMB.ps1 | SMB1, SMBSIGS, SMBSIGC, SMBENC | Fast+Deep |
 | RDP | Check-RDP.ps1 | RDP, RDP-NLA | Fast+Deep |
-| Network | Check-Network.ps1 | LLMNR, NETBIOS, NTLM | Fast+Deep |
+| Network | Check-Network.ps1 | LLMNR, NETBIOS (multi-layer: NodeType+WMI), NTLM | Fast+Deep |
 | Identity | Check-Identity.ps1 | WDIG, PPL, SID500, LAPS, UAC, UAC-SD | Fast+Deep |
 | LocalAdmins | Check-LocalAdmins.ps1 | LOCALADMIN | Fast+Deep |
 | Defender | Check-DefenderExclusions.ps1 | DEFEXCL-EXT, DEFEXCL-PATH, DEFEXCL-COUNT | Fast+Deep |

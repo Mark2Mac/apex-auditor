@@ -636,7 +636,7 @@ README fully rewritten: updated to v4.9.1, added WebUI usage, `-WebUI`/`-Port` f
 
 | Finding | Old fix (Manual) | New fix (Auto) | Tier |
 |---------|-----------------|---------------|------|
-| `NETBIOS` | UI walkthrough via NIC Properties | Registry write to `NetBT\Parameters\Interfaces` | CAUTION |
+| `NETBIOS` | UI walkthrough via NIC Properties | Registry write to `NetBT\Parameters\Interfaces` (enhanced to NodeType+WMI in v4.9.5) | CAUTION |
 | `VBS` | Windows Security > Core Isolation UI | Registry write `EnableVirtualizationBasedSecurity=1` | RISKY |
 | `HVCI` | Windows Security > Core Isolation UI | Registry write `Scenarios\HVCI\Enabled=1` | RISKY |
 | `FWRISK` | Review rules in wf.msc manually | `Disable-NetFirewallRule` on unowned/ungrouped Public rules | CAUTION |
@@ -758,3 +758,50 @@ This produces a correct three-state observed value (Enforced / Configured-but-no
 **Impact on scoring:** on a fully-hardened system, the false-positive HVCI finding cost 8 points from SeverityScore (HIGH weight = 8). After this fix, SeverityScore on such systems rises from 92 → 100.
 
 *Last updated: 2026-04-03 — v4.9.4 (HVCI false-positive fix: use SecurityServicesRunning instead of non-existent HypervisorEnforcedCodeIntegrityStatus)*
+
+---
+
+## v4.9.5 — NetBIOS Persistent Fix + Detection Accuracy (2026-04-03)
+
+### Problem
+
+The NETBIOS fix (`Check-Network.ps1`) only wrote `NetbiosOptions=2` to per-interface registry keys under `HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces`. This fix did not persist because:
+
+1. **VPN adapter recreation** — NordVPN's NordLynx WireGuard driver resets the `Tcpip_{guid}` interface key to `NetbiosOptions=0` on every tunnel connect/disconnect and on reboot.
+2. **No global backstop** — `NodeType` was unset and `EnableLMHOSTS=1`; no system-wide protection existed.
+3. **DHCP risk** — adapters with DHCP enabled could have their per-interface value overridden on lease renewal.
+
+The audit log showed the finding oscillating between MEDIUM and PASS multiple times per day, matching NordVPN reconnect events.
+
+### Fix: multi-layer hardening
+
+The NETBIOS fix command now applies four layers in a single expression:
+
+| Layer | Registry / API | Effect |
+|-------|---------------|--------|
+| 1 | `NetBT\Parameters\NodeType = 2` | **P-node global backstop** — disables broadcast-based NetBIOS name resolution system-wide. Without a WINS server (absent on modern networks), NetBIOS name resolution is effectively dead regardless of per-interface values. **Survives VPN adapter recreation and reboots.** |
+| 2 | `NetBT\Parameters\EnableLMHOSTS = 0` | Disables LMHOSTS legacy name resolution (CIS/STIG recommended) |
+| 3 | `NetBT\Parameters\Interfaces\*\NetbiosOptions = 2` | Per-interface disable (existing fix, unchanged) |
+| 4 | `Win32_NetworkAdapterConfiguration::SetTcpipNetbios(2)` via WMI | Notifies the driver stack immediately via the Windows API — same code path as the GUI "NIC Properties > IPv4 > Advanced > WINS > Disable NetBIOS" |
+
+### Detection accuracy fix
+
+The detection now reads `NodeType` from `NetBT\Parameters` in addition to the CIM adapter query. A system is considered **protected** (PASS) when **either**:
+- All IP-enabled adapters have `TcpipNetbiosOptions=2`, **or**
+- `NodeType=2` is set globally
+
+Previously, a system with `NodeType=2` (protected) but one VPN adapter showing `TcpipNetbiosOptions=0` (reset by the VPN driver) was incorrectly reported as MEDIUM-vulnerable even though no NetBIOS name resolution was possible. This false positive has been eliminated.
+
+**New `Observed` values:**
+
+| Condition | Observed string |
+|-----------|----------------|
+| All adapters explicitly disabled | `Disabled` |
+| NodeType=2 backstop active, ≥1 adapter OS-default | `NodeType=2 backstop active; N adapter(s) OS-default` |
+| No backstop, ≥1 adapter enabled | `Enabled on N adapter(s)` ← MEDIUM |
+
+### Backup compatibility
+
+The backup regex `(HK[LC][MU][^'\";\s]+)` now captures `HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters` (the parent key) as the first registry path. `reg.exe export` on this key is recursive, exporting both the `Parameters` values (`NodeType`, `EnableLMHOSTS`) and all `\Interfaces\*` subkeys in a single backup file — a more complete backup than the previous `\Interfaces`-only export.
+
+*Last updated: 2026-04-03 — v4.9.5 (NetBIOS fix persistence: NodeType=2 global backstop + WMI SetTcpipNetbios + accurate VPN-resilient detection)*

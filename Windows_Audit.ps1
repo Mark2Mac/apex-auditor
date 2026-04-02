@@ -128,8 +128,8 @@ foreach ($f in $checkFiles) { . $f.FullName }
 # ---------------------------------------------------------------------------
 #  CONSTANTS
 # ---------------------------------------------------------------------------
-$Script:TOOL_VERSION  = '4.9.3'
-$Script:BUILD_DATE    = '2026-04-02'
+$Script:TOOL_VERSION  = '4.9.5'
+$Script:BUILD_DATE    = '2026-04-03'
 $Script:SCORE_WEIGHTS = @{ CRITICAL=15; HIGH=8; MEDIUM=5; LOW=2 }
 $Script:CimSession    = $null
 
