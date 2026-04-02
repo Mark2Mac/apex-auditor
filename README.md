@@ -2,7 +2,15 @@
 
 > **Offline, standalone Windows security auditor and guided hardening tool — written in PowerShell. No internet connection, no cloud, no external agents.**
 
-**v4.9.1** — 21 check domains · 60+ finding IDs · CIS / DISA STIG / NIST 800-171r2 compliance mapping · interactive remediation with backup and undo · browser-based WebUI · peripheral-aware compatibility warnings · step-by-step guided remediation
+**v4.9.3** — 21 check domains · 60+ finding IDs · CIS / DISA STIG / NIST 800-171r2 compliance mapping · interactive remediation with backup and undo · browser-based WebUI · peripheral-aware compatibility warnings · step-by-step guided remediation
+
+---
+
+## Screenshots
+
+| Dashboard | Finding detail | Step-by-step guide |
+|-----------|---------------|-------------------|
+| ![Dashboard overview](docs/screenshots/01-dashboard.png) | ![Finding detail with impact warning](docs/screenshots/02-finding-detail.png) | ![Guide expanded](docs/screenshots/03-guide-expanded.png) |
 
 ---
 

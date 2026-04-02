@@ -128,7 +128,7 @@ foreach ($f in $checkFiles) { . $f.FullName }
 # ---------------------------------------------------------------------------
 #  CONSTANTS
 # ---------------------------------------------------------------------------
-$Script:TOOL_VERSION  = '4.9.2'
+$Script:TOOL_VERSION  = '4.9.3'
 $Script:BUILD_DATE    = '2026-04-02'
 $Script:SCORE_WEIGHTS = @{ CRITICAL=15; HIGH=8; MEDIUM=5; LOW=2 }
 $Script:CimSession    = $null
@@ -277,7 +277,8 @@ if ($Guided -or $isBareLaunch) {
 # ===========================================================================
 #  MAIN
 # ===========================================================================
-$exitCode = 1
+$exitCode  = 1
+$backupDir = $null   # initialized here so the finally block is safe regardless of execution path
 try {
     try   { $Script:CimSession = New-CimSession -ErrorAction Stop }
     catch { $Script:CimSession = $null; Write-TUI '[!] CIM session unavailable -- direct WMI fallback active' -Color Yellow }

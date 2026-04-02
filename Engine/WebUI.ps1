@@ -124,6 +124,11 @@ function Invoke-WebFix {
         Send-JsonResponse $Response @{ success=$false; error='Finding is already resolved' } 409
         return
     }
+    # Explicit _FixType guard — rejects Manual/None regardless of heuristic
+    if ($f.PSObject.Properties['_FixType'] -and $f._FixType -ne 'Auto') {
+        Send-JsonResponse $Response @{ success=$false; error="Finding $FindingId is not auto-fixable (_FixType=$($f._FixType))" } 422
+        return
+    }
     $tier = if ($SafetyTiers.ContainsKey($f.Id)) { $SafetyTiers[$f.Id] } else { 'CAUTION' }
     if (($tier -eq 'CAUTION' -or $tier -eq 'RISKY') -and -not $Confirmed) {
         Send-JsonResponse $Response @{ success=$false; requiresConfirm=$true; tier=$tier } 428
@@ -444,7 +449,7 @@ function findingCard(f){
         f._Guide.map(s=>'<li>'+h(s)+'</li>').join('')+'</ol></div>':'';
       actions='<div class="actions"><span class="fix-badge manual" style="font-size:11px;padding:3px 10px">Manual</span>'+shortcutBtn+guideToggle+'</div>'+guideBody;
     } else if(fixType==='Auto'){
-      actions='<div class="actions"><button class="btn '+btnClass+'" onclick="doFix(\''+h(f.Id)+'\',\''+tier+'\',this)" title="Tier: '+tier+' | Permanent change">Fix ['+tier+']</button></div>';
+      actions='<div class="actions"><button class="btn '+btnClass+'" onclick="doFix(\''+h(f.Id)+'\',\''+h(tier)+'\',this)" title="Tier: '+h(tier)+' | Permanent change">Fix ['+h(tier)+']</button></div>';
     }
   } else if(f._FixedAt){
     actions='<div class="actions"><button class="btn btn-undo" onclick="doUndo(\''+h(f.Id)+'\',this)">&#8635; Undo</button><span style="font-size:11px;color:var(--tx2);align-self:center">Fixed at '+h(f._FixedAt)+'</span></div>';
@@ -547,7 +552,7 @@ async function doRescan(){
   const btn=document.getElementById('btn-rescan');
   btn.disabled=true; btn.innerHTML='Scanning...';
   try{
-    const r=await fetch(BASE+'/api/rescan',{method:'POST'});
+    const r=await fetch(BASE+'/api/rescan',{method:'POST',headers:{'X-Requested-With':'APEX'}});
     const d=await r.json();
     if(d.success) toast('Rescan complete: '+d.vulnCount+' vulnerabilities');
     else toast('Rescan failed: '+d.error,false);
@@ -557,7 +562,7 @@ async function doRescan(){
 }
 
 async function doStop(){
-  try{ await fetch(BASE+'/api/shutdown',{method:'POST'}); }catch(e){}
+  try{ await fetch(BASE+'/api/shutdown',{method:'POST',headers:{'X-Requested-With':'APEX'}}); }catch(e){}
   clearInterval(pollTimer);
   document.getElementById('dot').className='dot err';
   toast('Server stopped. You can close this tab.',true);
@@ -602,7 +607,7 @@ const NEEDS_REBOOT=new Set(['VBS','HVCI','CG','PPL','SMB1','BLENC','BLPBA']);
 async function doRescanVerify(){
   document.getElementById('btn-rescan').disabled=true;
   try{
-    const r=await fetch(BASE+'/api/rescan',{method:'POST'});
+    const r=await fetch(BASE+'/api/rescan',{method:'POST',headers:{'X-Requested-With':'APEX'}});
     const d=await r.json();
     await poll();
     if(d.success) toast('Verified: '+d.vulnCount+' vulnerabilit'+(d.vulnCount===1?'y':'ies')+' remaining',true);
@@ -616,7 +621,7 @@ async function applyFix(id, confirmed, btn){
   const needsReboot=NEEDS_REBOOT.has(id)||(fBefore&&fBefore._Tier==='RISKY');
   try{
     const r=await fetch(BASE+'/api/fix/'+encodeURIComponent(id),{
-      method:'POST',headers:{'Content-Type':'application/json'},
+      method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'APEX'},
       body:JSON.stringify({confirm:confirmed})
     });
     const d=await r.json();
@@ -631,7 +636,7 @@ async function applyFix(id, confirmed, btn){
 async function doUndo(id, btn){
   if(btn) btn.disabled=true;
   try{
-    const r=await fetch(BASE+'/api/undo/'+encodeURIComponent(id),{method:'POST'});
+    const r=await fetch(BASE+'/api/undo/'+encodeURIComponent(id),{method:'POST',headers:{'X-Requested-With':'APEX'}});
     const d=await r.json();
     if(d.success){ toast(id+' undone -- verifying...',true); await doRescanVerify(); }
     else toast('Undo failed: '+(d.error||'unknown error'),false);
@@ -640,7 +645,7 @@ async function doUndo(id, btn){
 
 async function doLaunch(id){
   try{
-    const r=await fetch(BASE+'/api/launch/'+encodeURIComponent(id),{method:'POST'});
+    const r=await fetch(BASE+'/api/launch/'+encodeURIComponent(id),{method:'POST',headers:{'X-Requested-With':'APEX'}});
     const d=await r.json();
     if(d.success) toast('Settings panel opened.',true);
     else toast('Could not open: '+(d.error||'unknown'),false);
@@ -679,16 +684,17 @@ function renderQuickActions(){
 
 async function doBatchFix(mode){
   const findings=D?D.findings||[]:[];
+  const autoFix=f=>f._FixType!=='Manual'&&f._FixType!=='None';
   const n=mode==='safe'
-    ?findings.filter(f=>f.Vulnerable&&(f._Tier||'CAUTION')==='SAFE').length
-    :findings.filter(f=>f.Vulnerable&&f.Recommendation==='Recommended'&&(f._Tier==='SAFE'||f._Tier==='CAUTION')).length;
+    ?findings.filter(f=>f.Vulnerable&&f.Fix&&f.Fix!=='N/A'&&autoFix(f)&&(f._Tier||'CAUTION')==='SAFE').length
+    :findings.filter(f=>f.Vulnerable&&f.Fix&&f.Fix!=='N/A'&&autoFix(f)&&f.Recommendation==='Recommended'&&(f._Tier==='SAFE'||f._Tier==='CAUTION')).length;
   if(!n){toast('No applicable findings.',false);return;}
   if(mode==='recommended'){
     if(!confirm('Apply '+n+' Recommended fix'+(n===1?'':'es')+' (SAFE + CAUTION tier)?\nA backup will be created first.')) return;
   }
   toast('Applying '+n+' fix'+(n===1?'':'es')+'...',true);
   try{
-    const r=await fetch(BASE+'/api/batch-fix',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode})});
+    const r=await fetch(BASE+'/api/batch-fix',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'APEX'},body:JSON.stringify({mode})});
     const d=await r.json();
     if(d.success){
       let msg='Applied: '+d.applied+(d.failed?' | Failed: '+d.failed:'')+' -- verifying...';
@@ -731,6 +737,7 @@ function Invoke-WebBatchFix {
 
     $vulns = @($Findings | Where-Object {
         $_.Vulnerable -and $_.Fix -and $_.Fix -ne 'N/A' -and
+        $_.PSObject.Properties['_FixType'] -and $_._FixType -eq 'Auto' -and
         -not ($_.Fix.TrimEnd() -match '\.$') -and
         -not ($_.Fix -match '<[A-Za-z_][^>]+>')
     })
@@ -840,11 +847,12 @@ function Start-AuditWebUI {
             $path = $req.Url.LocalPath.TrimEnd('/')
             $meth = $req.HttpMethod.ToUpper()
 
-            # CSRF protection: reject POST requests from foreign origins
+            # CSRF protection: require matching Origin OR X-Requested-With header on POST
             if ($meth -eq 'POST') {
                 $origin = $req.Headers['Origin']
-                if ($origin -and $origin -ne $baseUrl) {
-                    Send-JsonResponse $resp @{ error='Origin mismatch' } 403
+                $xhr    = $req.Headers['X-Requested-With']
+                if ((-not $origin -and -not $xhr) -or ($origin -and $origin -ne $baseUrl)) {
+                    Send-JsonResponse $resp @{ error='CSRF check failed: missing or mismatched Origin' } 403
                     continue
                 }
             }
@@ -901,6 +909,7 @@ function Start-AuditWebUI {
                     $fLaunch = $Findings | Where-Object { $_.Id -eq $fid } | Select-Object -First 1
                     if ($fLaunch -and $fLaunch.PSObject.Properties['_Shortcut'] -and $fLaunch._Shortcut -and $fLaunch._Shortcut.Cmd) {
                         try {
+                            Write-Log "LAUNCH shortcut for finding $fid"
                             Invoke-Expression $fLaunch._Shortcut.Cmd | Out-Null
                             Send-JsonResponse $resp @{ success=$true }
                         } catch {

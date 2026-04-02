@@ -40,11 +40,18 @@ function Invoke-CheckFirewall {
         }
     }
     try {
-        # Pre-check: detect third-party firewall (SecurityCenter2 namespace)
+        # Pre-check: detect third-party firewall.
+        # root\SecurityCenter2 only exists on Windows client SKUs (ProductType=1).
+        # On Windows Server the namespace is absent; default to $true (safe: skip auto-fix).
         $thirdPartyFW = $false
         try {
-            $fwProducts = @(Get-CimInstance -Namespace 'root\SecurityCenter2' -ClassName 'FirewallProduct' -ErrorAction SilentlyContinue)
-            $thirdPartyFW = $fwProducts.Count -gt 0
+            $isServer = (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).ProductType -ne 1
+            if ($isServer) {
+                $thirdPartyFW = $true  # Can't query SecurityCenter2 on Server; conservative default
+            } else {
+                $fwProducts = @(Get-CimInstance -Namespace 'root\SecurityCenter2' -ClassName 'FirewallProduct' -ErrorAction SilentlyContinue)
+                $thirdPartyFW = $fwProducts.Count -gt 0
+            }
         } catch { }
 
         $cnt  = @(Get-NetFirewallRule -Direction Inbound -Enabled True -Action Allow `

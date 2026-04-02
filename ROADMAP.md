@@ -700,3 +700,40 @@ The ephemeral log in `%TEMP%` was already cleaned by `Remove-LogFile`; JSON/HTML
 - `FWRISK` `_ImpactWarning` added: describes which rules are affected and how to restore via `wf.msc`
 
 *Last updated: 2026-04-02 — v4.9.2 (Manual→Auto conversions, pre-checks, firewall backup/undo, zero-trace cleanup)*
+
+---
+
+## v4.9.3 — Security Hardening + Bug Fixes (2026-04-02)
+
+### Security fixes
+
+**Server-side `_FixType` validation in `/api/fix` and `/api/batch-fix`:**
+`Invoke-WebFix` and `Invoke-WebBatchFix` in `Engine\WebUI.ps1` now explicitly check `_FixType` before executing any fix command. Previously only a heuristic (Fix string ends with `.`) blocked Manual findings; a Manual finding whose Fix text passed the heuristic could be executed. Now any finding where `_FixType ≠ 'Auto'` returns HTTP 422 immediately.
+
+**CSRF hardening:**
+The Origin check now requires either a matching `Origin` header or the custom `X-Requested-With: APEX` header on every POST request. Previously a POST with no Origin header passed through silently (local processes can omit Origin). All seven POST `fetch()` calls in the WebUI JS now send `X-Requested-With: APEX`.
+
+**XSS fix — `tier` unescaped in `onclick` attribute:**
+The safety-tier string was interpolated directly into `onclick="doFix('...','<tier>',this)"` without HTML-escaping. `tier` is now escaped with the existing `h()` helper, consistent with all other dynamic content.
+
+**`Write-Log` newline sanitisation:**
+`\r\n` sequences in log messages were written verbatim, allowing multi-line log injection. `Write-Log` now replaces any run of CR/LF with ` | ` before appending to the log file.
+
+### Bug fixes
+
+**`doBatchFix` confirm dialog count:**
+The "Apply N fixes?" confirm dialog counted all vulnerable fixable findings but applied only the ones passing the `autoFix()` filter (i.e., `_FixType` is not Manual or None). The count now uses the same `autoFix()` filter, eliminating the mismatch.
+
+**`$vbsCapable` null-safe on Hyper-V guests and older firmware:**
+`Check-DeviceGuard.ps1` computed `$vbsCapable` solely from `VirtualizationFirmwareEnabled`. On Hyper-V guests and some firmware configurations this property is `$null`, causing VBS and HVCI to be marked `Confidence=NotApplicable` even when VBS is already running. The check now also treats `VirtualizationBasedSecurityStatus -eq 2` (VBS running) as proof of hardware capability.
+
+**`root\SecurityCenter2` missing on Windows Server:**
+`Check-Firewall.ps1` queried the `SecurityCenter2` namespace to detect third-party firewalls before auto-applying the FWRISK fix. This namespace does not exist on Windows Server SKUs; the original `catch {}` silently set `$thirdPartyFW = $false`, enabling auto-fix on Server hosts with no visibility into third-party FW state. The check now reads `Win32_OperatingSystem.ProductType`; on Server SKUs it defaults to `$thirdPartyFW = $true` (conservative: no auto-fix).
+
+**`$backupDir` undefined in `finally` block:**
+`Windows_Audit.ps1` referenced `$backupDir` in the `finally` block but only assigned it inside the `-Remediate` execution path. With `StrictMode Off` this evaluated silently to `$null`; any future `Set-StrictMode -Version Latest` adoption would have broken non-remediation runs. `$backupDir` is now initialised to `$null` before the `try` block.
+
+**Launch action logging:**
+`/api/launch` in `Engine\WebUI.ps1` now calls `Write-Log` before executing the shortcut command so every launch action is traceable in the ephemeral log.
+
+*Last updated: 2026-04-02 — v4.9.3 (server-side _FixType guard, CSRF hardening, XSS fix, log injection, batch count, vbsCapable null-safe, Server SKU FW fallback, $backupDir init)*

@@ -10,8 +10,11 @@ function Invoke-CheckDeviceGuard {
     try {
         $dg = Get-Cim 'Win32_DeviceGuard' -Namespace 'root\Microsoft\Windows\DeviceGuard'
 
-        # Pre-check: firmware must support VT-x for VBS/HVCI to work
-        $vbsCapable = $dg.VirtualizationFirmwareEnabled -eq $true
+        # Pre-check: firmware must support VT-x for VBS/HVCI to work.
+        # Use VirtualizationFirmwareEnabled when available; fall back to VBS already running
+        # (if VBS status=2 it proved hardware capability even if the property is $null).
+        $vbsCapable = ($dg.VirtualizationFirmwareEnabled -eq $true) -or
+                      ($dg.VirtualizationBasedSecurityStatus -eq 2)
 
         $vbsObs  = if ($null -ne $dg.VirtualizationBasedSecurityStatus)        { "$($dg.VirtualizationBasedSecurityStatus)" }  else { 'Unknown' }
         $hvciObs = if ($null -ne $dg.HypervisorEnforcedCodeIntegrityStatus)     { "$($dg.HypervisorEnforcedCodeIntegrityStatus)" } else { 'Unknown' }

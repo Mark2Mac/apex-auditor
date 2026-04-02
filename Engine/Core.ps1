@@ -324,8 +324,9 @@ function Write-Log {
         [ValidateSet('INFO','WARN','ERROR','DEBUG')][string] $Level = 'INFO'
     )
     if (-not $Script:LogFile) { return }
-    $ts   = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-    $line = "$ts [$Level] $Message"
+    $ts      = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    $Message = $Message -replace '[\r\n]+', ' | '   # prevent log injection via embedded newlines
+    $line    = "$ts [$Level] $Message"
     try { Add-Content -Path $Script:LogFile -Value $line -Encoding UTF8 } catch { }
 }
 
