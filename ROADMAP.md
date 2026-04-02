@@ -737,3 +737,24 @@ The "Apply N fixes?" confirm dialog counted all vulnerable fixable findings but 
 `/api/launch` in `Engine\WebUI.ps1` now calls `Write-Log` before executing the shortcut command so every launch action is traceable in the ephemeral log.
 
 *Last updated: 2026-04-02 — v4.9.3 (server-side _FixType guard, CSRF hardening, XSS fix, log injection, batch count, vbsCapable null-safe, Server SKU FW fallback, $backupDir init)*
+
+---
+
+## v4.9.4 — HVCI Detection Fix (2026-04-03)
+
+**`Check-DeviceGuard.ps1` — permanent false-positive on HVCI / Memory Integrity:**
+The check read `$dg.HypervisorEnforcedCodeIntegrityStatus`, a property that does not exist in the `Win32_DeviceGuard` WMI class on any shipping version of Windows 10/11. The property always returned `$null`, which stringified to an empty string displayed as "Unknown" in the dashboard, and the comparison `$null -ne 2` evaluated to `$true` — marking HVCI as HIGH-severity vulnerable on every system, including systems where HVCI was fully enforced.
+
+The correct signal is `SecurityServicesRunning`, an array of active service IDs where `2` = HVCI. The fix replaces the non-existent property with:
+
+```powershell
+$hvciRunning = 2 -in @($dg.SecurityServicesRunning)
+$hvciObs = if ($hvciRunning) { '2 (Enforced)' } elseif (2 -in @($dg.SecurityServicesConfigured)) { 'Configured but not running' } else { 'Not running' }
+-Vulnerable (-not $hvciRunning)
+```
+
+This produces a correct three-state observed value (Enforced / Configured-but-not-running / Not running) and eliminates the false positive entirely. Systems with HVCI enforced now correctly report PASS with `Observed: 2 (Enforced)`.
+
+**Impact on scoring:** on a fully-hardened system, the false-positive HVCI finding cost 8 points from SeverityScore (HIGH weight = 8). After this fix, SeverityScore on such systems rises from 92 → 100.
+
+*Last updated: 2026-04-03 — v4.9.4 (HVCI false-positive fix: use SecurityServicesRunning instead of non-existent HypervisorEnforcedCodeIntegrityStatus)*
